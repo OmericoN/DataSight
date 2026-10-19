@@ -34,6 +34,43 @@ INSIGHT_COLUMNS: tuple[str, ...] = (
     "um_repository",
 )
 
+RUN_RESULT_STAGE_COLUMNS: tuple[str, ...] = (
+    "pdf_downloaded",
+    "grobid_converted",
+    "document_rendered",
+)
+
+RUN_RESULT_COLUMNS: tuple[str, ...] = (
+    *INSIGHT_COLUMNS[:5],
+    *RUN_RESULT_STAGE_COLUMNS,
+    *INSIGHT_COLUMNS[5:],
+)
+
+RUN_CANDIDATE_RESULT_COLUMNS: tuple[str, ...] = (
+    "paper_id",
+    "publication_title",
+    "publication_year",
+    "discovery_method",
+    *RUN_RESULT_STAGE_COLUMNS,
+)
+
+RUN_INSIGHT_RESULT_COLUMNS: tuple[str, ...] = (
+    *INSIGHT_COLUMNS[:3],
+    "discovery_method",
+    *INSIGHT_COLUMNS[5:],
+)
+
+RUN_DISCOVERY_METHOD_LABELS: dict[str, str] = {
+    "catalog_funnel": "Smart discovery",
+    "adaptive_funnel": "Smart discovery",
+    "smart_discovery": "Smart discovery",
+    "random": "Random",
+    "random_sample": "Random",
+    "stochastic": "Random",
+    "manual": "Manual query",
+    "manual_query": "Manual query",
+}
+
 DISCOVERY_CANDIDATE_COLUMNS: tuple[str, ...] = (
     "paper_id",
     "title",
@@ -73,6 +110,21 @@ def validate_discovery_candidate_columns(columns: Sequence[str] | None) -> list[
     return _validate_columns(columns, DISCOVERY_CANDIDATE_COLUMNS, "discovery candidate")
 
 
+def validate_run_result_columns(columns: Sequence[str] | None) -> list[str]:
+    """Return selected unified run-result columns in canonical order."""
+    return _validate_columns(columns, RUN_RESULT_COLUMNS, "run result")
+
+
+def validate_run_candidate_result_columns(columns: Sequence[str] | None) -> list[str]:
+    """Return selected one-row-per-paper candidate columns in canonical order."""
+    return _validate_columns(columns, RUN_CANDIDATE_RESULT_COLUMNS, "run candidate")
+
+
+def validate_run_insight_result_columns(columns: Sequence[str] | None) -> list[str]:
+    """Return detailed run-insight columns, excluding stage flags and raw provenance."""
+    return _validate_columns(columns, RUN_INSIGHT_RESULT_COLUMNS, "run insight")
+
+
 def serialize_insights_csv(
     rows: Iterable[dict[str, Any]],
     columns: Sequence[str] | None = None,
@@ -94,6 +146,64 @@ def serialize_discovery_candidates_csv(
     """Serialize selected run discovery candidates as CSV."""
     selected_columns = validate_discovery_candidate_columns(columns)
     return _serialize_rows_csv(rows, selected_columns)
+
+
+def serialize_run_results_csv(
+    rows: Iterable[dict[str, Any]],
+    columns: Sequence[str] | None = None,
+) -> str:
+    """Serialize selected candidates and any joined insight rows as one CSV."""
+    selected_columns = validate_run_result_columns(columns)
+    return _serialize_rows_csv(rows, selected_columns)
+
+
+def serialize_run_candidate_results_csv(
+    rows: Iterable[dict[str, Any]],
+    columns: Sequence[str] | None = None,
+) -> str:
+    """Serialize one summary row per selected paper."""
+    selected_columns = validate_run_candidate_result_columns(columns)
+    return _serialize_rows_csv(run_candidate_result_rows(rows), selected_columns)
+
+
+def serialize_run_insight_results_csv(
+    rows: Iterable[dict[str, Any]],
+    columns: Sequence[str] | None = None,
+) -> str:
+    """Serialize detailed candidate/insight rows without pipeline stage flags."""
+    selected_columns = validate_run_insight_result_columns(columns)
+    return _serialize_rows_csv(run_insight_result_rows(rows), selected_columns)
+
+
+def run_candidate_result_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project detailed rows into one candidate summary per paper."""
+    summaries: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    for row in rows:
+        paper_id = row.get("paper_id")
+        if paper_id in seen:
+            continue
+        seen.add(paper_id)
+        summary = {column: row.get(column) for column in RUN_CANDIDATE_RESULT_COLUMNS}
+        summary["discovery_method"] = run_discovery_method_label(row.get("discovery_mode"))
+        summaries.append(summary)
+    return summaries
+
+
+def run_insight_result_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project detailed rows onto the run-insight schema."""
+    projected_rows: list[dict[str, Any]] = []
+    for row in rows:
+        projected = {column: row.get(column) for column in RUN_INSIGHT_RESULT_COLUMNS}
+        projected["discovery_method"] = run_discovery_method_label(row.get("discovery_mode"))
+        projected_rows.append(projected)
+    return projected_rows
+
+
+def run_discovery_method_label(discovery_mode: Any) -> str:
+    """Map a persisted run discovery mode to its user-facing result label."""
+    normalized = str(discovery_mode or "").strip().lower()
+    return RUN_DISCOVERY_METHOD_LABELS.get(normalized, "Not recorded")
 
 
 def _validate_columns(
@@ -124,6 +234,10 @@ def _serialize_rows_csv(rows: Iterable[dict[str, Any]], columns: Sequence[str]) 
 def _csv_cell(value: Any) -> Any:
     if value is None:
         return ""
+    if isinstance(value, str) and (
+        value.lstrip().startswith(("=", "+", "-", "@")) or value.startswith(("\t", "\r", "\n"))
+    ):
+        return f"'{value}"
     if isinstance(value, (dict, list, tuple)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default)
     if isinstance(value, Path):

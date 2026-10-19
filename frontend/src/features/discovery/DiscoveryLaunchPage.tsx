@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   RiCheckLine,
   RiDatabase2Line,
+  RiDownload2Line,
   RiErrorWarningLine,
   RiExternalLinkLine,
   RiLoader4Line,
@@ -12,6 +13,7 @@ import {
   RiSettings3Line,
   RiShieldLine,
   RiShuffleLine,
+  RiStopCircleLine,
 } from "@remixicon/react";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
@@ -64,7 +66,7 @@ export default function DiscoveryLaunchPage() {
     retry: false,
   });
   const previewMutation = useMutation({
-    mutationFn: api.discoveryPreview,
+    mutationFn: (request: DiscoveryPreviewRequest) => api.discoveryPreview(request),
     onSuccess: () => setExcludedIds(new Set()),
   });
   useEffect(() => {
@@ -254,11 +256,17 @@ export default function DiscoveryLaunchPage() {
       {preview ? (
         <>
           <PhaseResults mode={mode} preview={preview} />
-          <CandidatePreview mode={mode} candidates={preview.candidates} excludedIds={excludedIds} onSelect={setSelectedCandidate} onToggle={toggleCandidate} total={preview.candidate_count} />
+          <CandidatePreview mode={mode} previewId={preview.preview_id} candidates={preview.candidates} excludedIds={excludedIds} onSelect={setSelectedCandidate} onToggle={toggleCandidate} total={preview.candidate_count} />
         </>
       ) : null}
 
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-end border-t bg-background/95 px-3 py-2 backdrop-blur xl:static xl:border-0 xl:bg-transparent xl:p-0">
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-end gap-2 border-t bg-background/95 px-3 py-2 backdrop-blur xl:static xl:border-0 xl:bg-transparent xl:p-0">
+        {launchJob.phase === "discovering" ? (
+          <Button className="pointer-events-auto" type="button" variant="outline" onClick={launchJob.cancel}>
+            <RiStopCircleLine data-icon="inline-start" aria-hidden="true" />
+            Cancel launch
+          </Button>
+        ) : null}
         <Button className="pointer-events-auto min-w-40 shadow-lg" type="submit" disabled={launchJob.isPending || previewMutation.isPending || blocked || manualMissing}>
           {launchJob.isPending ? <RiLoader4Line className="animate-spin" data-icon="inline-start" aria-hidden="true" /> : <RiPlayLine data-icon="inline-start" />}
           {launchJob.phase === "starting" ? "Opening workspace…" : launchJob.phase === "discovering" ? mode === "random" ? "Drawing sample…" : "Preparing discovery…" : previewMutation.isPending ? mode === "random" ? "Drawing sample…" : "Preparing preview…" : "Run pipeline"}
@@ -356,10 +364,14 @@ function PhaseResults({ mode, preview }: { mode: DiscoveryMode; preview: Awaited
   );
 }
 
-function CandidatePreview({ mode, candidates, excludedIds, onSelect, onToggle, total }: { mode: DiscoveryMode; candidates: DiscoveryCandidate[]; excludedIds: Set<string>; onSelect: (candidate: DiscoveryCandidate) => void; onToggle: (candidate: DiscoveryCandidate, include: boolean) => void; total: number }) {
+function CandidatePreview({ mode, previewId, candidates, excludedIds, onSelect, onToggle, total }: { mode: DiscoveryMode; previewId: string; candidates: DiscoveryCandidate[]; excludedIds: Set<string>; onSelect: (candidate: DiscoveryCandidate) => void; onToggle: (candidate: DiscoveryCandidate, include: boolean) => void; total: number }) {
+  const selectedCandidates = candidates.filter((candidate) => candidate.included && candidate.pipeline_ready && !excludedIds.has(candidate.paper_id));
   return (
     <Card className="min-w-0">
-      <CardHeader><CardTitle>Candidate review</CardTitle><CardDescription>{mode === "random" ? `${total} eligible publications retained in seeded random order. Random inclusion is not evidence of dataset use.` : `${total} candidates ranked by evidence—not predicted reuse probability.`}</CardDescription></CardHeader>
+      <CardHeader className="flex items-start justify-between gap-4">
+        <div className="min-w-0"><CardTitle>Candidate review</CardTitle><CardDescription>{mode === "random" ? `${total} eligible publications retained in seeded random order. Random inclusion is not evidence of dataset use.` : `${total} candidates ranked by evidence—not predicted reuse probability.`}</CardDescription></div>
+        <Button type="button" variant="outline" size="sm" className="shrink-0" disabled={!selectedCandidates.length} onClick={() => downloadCandidatePreviewCsv(previewId, mode, selectedCandidates)}><RiDownload2Line data-icon="inline-start" />Download selected CSV</Button>
+      </CardHeader>
       <CardContent className="overflow-x-auto">
         <Table className="min-w-[940px]"><TableHeader><TableRow><TableHead>Include</TableHead><TableHead>Paper</TableHead><TableHead>{mode === "random" ? "Sampling basis" : "Evidence tier"}</TableHead><TableHead>Strength</TableHead><TableHead>{mode === "random" ? "Selection reason" : "Evidence"}</TableHead><TableHead>Access</TableHead></TableRow></TableHeader>
           <TableBody>{candidates.map((candidate) => {
@@ -397,3 +409,25 @@ function errorMessage(error: Error) { if (error instanceof ApiError && typeof er
 function optionalNumber(value: string) { const parsed = Number(value); return value.trim() && Number.isFinite(parsed) ? parsed : null; }
 function splitTerms(value: string) { return value.split(/[;,|]/).map((term) => term.trim()).filter(Boolean); }
 function formatText(value: string) { return value.replaceAll("_", " "); }
+
+function downloadCandidatePreviewCsv(previewId: string, mode: DiscoveryMode, candidates: DiscoveryCandidate[]) {
+  const discoveryMethod = mode === "catalog_funnel" ? "Smart discovery" : mode === "random" ? "Random" : "Manual query";
+  const rows = [
+    "id,title,discovery_method",
+    ...candidates.map((candidate) => [candidate.paper_id, candidate.title ?? "", discoveryMethod].map(csvCell).join(",")),
+  ];
+  const blob = new Blob([`${rows.join("\r\n")}\r\n`], { type: "text/csv;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `datasight-preview-${previewId.replace(/[^a-zA-Z0-9_-]/g, "")}-candidates.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function csvCell(value: string) {
+  const spreadsheetSafeValue = /^(?:\s*[=+\-@]|[\t\r\n])/.test(value) ? `'${value}` : value;
+  return `"${spreadsheetSafeValue.replaceAll('"', '""')}"`;
+}

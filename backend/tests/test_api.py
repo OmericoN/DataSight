@@ -4,15 +4,41 @@ from pathlib import Path
 import sys
 
 from fastapi.testclient import TestClient
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from datasight.interfaces.api.main import app
-from datasight.application.insights import DISCOVERY_CANDIDATE_COLUMNS, INSIGHT_COLUMNS
+from datasight.application.insights import (
+    DISCOVERY_CANDIDATE_COLUMNS,
+    INSIGHT_COLUMNS,
+    RUN_CANDIDATE_RESULT_COLUMNS,
+    RUN_INSIGHT_RESULT_COLUMNS,
+    run_discovery_method_label,
+)
 
 
 client = TestClient(app)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("catalog_funnel", "Smart discovery"),
+        ("adaptive_funnel", "Smart discovery"),
+        ("smart_discovery", "Smart discovery"),
+        ("random", "Random"),
+        ("random_sample", "Random"),
+        ("stochastic", "Random"),
+        ("manual", "Manual query"),
+        ("manual_query", "Manual query"),
+        ("legacy_unknown", "Not recorded"),
+        (None, "Not recorded"),
+    ],
+)
+def test_run_discovery_method_labels(mode, expected):
+    assert run_discovery_method_label(mode) == expected
 
 
 def test_stage_catalog_marks_unimplemented_workflow_stages_with_null_labels():
@@ -314,7 +340,7 @@ def test_run_candidate_csv_exports_selected_rows_and_columns(monkeypatch):
     assert records[0]["evidence_reasons"] == '["dataset_citation"]'
 
 
-def test_run_insights_are_paginated_and_export_all_rows(monkeypatch):
+def test_run_results_include_candidates_without_mentions_and_export_all_rows(monkeypatch):
     class FakeRepo:
         def __enter__(self):
             return self
@@ -325,24 +351,49 @@ def test_run_insights_are_paginated_and_export_all_rows(monkeypatch):
         def get_pipeline_run(self, pipeline_run_id):
             return {"id": pipeline_run_id} if pipeline_run_id == 9 else None
 
-        def export_insight_rows(self, pipeline_run_id=None):
+        def export_run_result_rows(self, pipeline_run_id):
             assert pipeline_run_id == 9
             return [
-                {"paper_id": "W1", "dataset_name": "Dataset 1"},
-                {"paper_id": "W2", "dataset_name": "Dataset 2"},
+                {
+                    "paper_id": "W1",
+                    "discovery_mode": "adaptive_funnel",
+                    "pdf_downloaded": True,
+                    "grobid_converted": True,
+                    "document_rendered": True,
+                    "dataset_name": "Dataset 1",
+                },
+                {
+                    "paper_id": "W2",
+                    "discovery_mode": "stochastic",
+                    "pdf_downloaded": True,
+                    "grobid_converted": False,
+                    "document_rendered": False,
+                    "dataset_name": None,
+                },
             ]
 
     monkeypatch.setattr("datasight.interfaces.api.routes.insights.PipelineRepository", FakeRepo)
 
     page = client.get("/api/v1/runs/9/insights?offset=1&limit=1")
+    candidate_page = client.get("/api/v1/runs/9/candidates?offset=0&limit=50")
     export = client.get(
         "/api/v1/runs/9/insights/export.csv?columns=dataset_name&columns=paper_id"
     )
     missing = client.get("/api/v1/runs/404/insights")
 
     assert page.status_code == 200
+    assert page.json()["columns"] == list(RUN_INSIGHT_RESULT_COLUMNS)
     assert page.json()["total"] == 2
-    assert page.json()["rows"] == [{"paper_id": "W2", "dataset_name": "Dataset 2"}]
+    assert page.json()["rows"][0]["paper_id"] == "W2"
+    assert page.json()["rows"][0]["dataset_name"] is None
+    assert "pdf_downloaded" not in page.json()["rows"][0]
+    assert "discovery_mode" not in page.json()["rows"][0]
+    assert "discovery_methods" not in page.json()["rows"][0]
+    assert page.json()["rows"][0]["discovery_method"] == "Random"
+    assert candidate_page.json()["columns"] == list(RUN_CANDIDATE_RESULT_COLUMNS)
+    assert candidate_page.json()["total"] == 2
+    assert candidate_page.json()["rows"][1]["paper_id"] == "W2"
+    assert candidate_page.json()["rows"][0]["discovery_method"] == "Smart discovery"
     assert export.headers["content-disposition"] == (
         'attachment; filename="datasight-run-9-insights.csv"'
     )
@@ -350,6 +401,84 @@ def test_run_insights_are_paginated_and_export_all_rows(monkeypatch):
     assert len(records) == 2
     assert list(records[0]) == ["paper_id", "dataset_name"]
     assert missing.status_code == 404
+
+
+def test_run_result_csv_splits_candidate_summaries_from_detailed_insights(monkeypatch):
+    class FakeRepo:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return None
+
+        def get_pipeline_run(self, pipeline_run_id):
+            return {"id": pipeline_run_id}
+
+        def export_run_result_rows(self, pipeline_run_id):
+            return [
+                {
+                    "paper_id": "W1",
+                    "publication_title": "Paper one",
+                    "discovery_mode": "catalog_funnel",
+                    "discovery_methods": ["dataset_citation"],
+                    "pdf_downloaded": True,
+                    "grobid_converted": True,
+                    "document_rendered": True,
+                    "dataset_name": "Dataset A",
+                },
+                {
+                    "paper_id": "W1",
+                    "publication_title": "Paper one",
+                    "discovery_mode": "catalog_funnel",
+                    "discovery_methods": ["dataset_citation"],
+                    "pdf_downloaded": True,
+                    "grobid_converted": True,
+                    "document_rendered": True,
+                    "dataset_name": "Dataset B",
+                },
+            ]
+
+    monkeypatch.setattr("datasight.interfaces.api.routes.insights.PipelineRepository", FakeRepo)
+
+    candidates = client.get(
+        "/api/v1/runs/9/candidates/export.csv"
+        "?columns=paper_id&columns=discovery_method&columns=pdf_downloaded"
+    )
+    insights = client.get(
+        "/api/v1/runs/9/insights/export.csv"
+        "?columns=paper_id&columns=discovery_method&columns=dataset_name"
+    )
+    invalid = client.get("/api/v1/runs/9/insights/export.csv?columns=unknown")
+    empty = client.get("/api/v1/runs/9/insights/export.csv?columns=")
+
+    candidate_records = list(csv.DictReader(io.StringIO(candidates.text)))
+    insight_records = list(csv.DictReader(io.StringIO(insights.text)))
+    assert candidates.headers["content-disposition"] == (
+        'attachment; filename="datasight-run-9-candidates.csv"'
+    )
+    assert insights.headers["content-disposition"] == (
+        'attachment; filename="datasight-run-9-insights.csv"'
+    )
+    assert len(candidate_records) == 1
+    assert list(candidate_records[0]) == ["paper_id", "discovery_method", "pdf_downloaded"]
+    assert candidate_records[0]["discovery_method"] == "Smart discovery"
+    assert len(insight_records) == 2
+    assert list(insight_records[0]) == ["paper_id", "discovery_method", "dataset_name"]
+    assert insight_records[0]["discovery_method"] == "Smart discovery"
+    assert "pdf_downloaded" not in insight_records[0]
+    assert "discovery_mode" not in insight_records[0]
+    assert "discovery_methods" not in insight_records[0]
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"] == "Unknown run insight columns: unknown"
+    assert empty.status_code == 422
+    assert empty.json()["detail"] == "Select at least one column."
+    assert RUN_CANDIDATE_RESULT_COLUMNS[-1] == "document_rendered"
+    assert "discovery_method" in RUN_CANDIDATE_RESULT_COLUMNS
+    assert "discovery_method" in RUN_INSIGHT_RESULT_COLUMNS
+    assert "discovery_mode" not in RUN_CANDIDATE_RESULT_COLUMNS
+    assert "discovery_mode" not in RUN_INSIGHT_RESULT_COLUMNS
+    assert "discovery_methods" not in RUN_CANDIDATE_RESULT_COLUMNS
+    assert "discovery_methods" not in RUN_INSIGHT_RESULT_COLUMNS
 
 
 def test_run_result_csv_rejects_invalid_or_empty_columns(monkeypatch):

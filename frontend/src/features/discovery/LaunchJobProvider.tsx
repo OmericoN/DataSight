@@ -19,6 +19,7 @@ export type LaunchJobRequest = {
 };
 
 type LaunchJobContextValue = {
+  cancel: () => void;
   error: Error | null;
   isPending: boolean;
   phase: LaunchPhase;
@@ -33,6 +34,7 @@ export function LaunchJobProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const locationRef = useRef(location.pathname);
   const inFlightRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [error, setError] = useState<Error | null>(null);
 
@@ -41,19 +43,23 @@ export function LaunchJobProvider({ children }: { children: ReactNode }) {
   const start = useCallback((request: LaunchJobRequest) => {
     if (inFlightRef.current) return;
 
+    const controller = new AbortController();
+    controllerRef.current = controller;
     inFlightRef.current = true;
     setError(null);
     setPhase(request.preview ? "starting" : "discovering");
 
     void (async () => {
       try {
-        const preview = request.preview ?? await api.discoveryPreview(request.previewRequest);
+        const preview = request.preview ?? await api.discoveryPreview(request.previewRequest, controller.signal);
+        if (controller.signal.aborted) return;
         setPhase("starting");
         const created = await api.createRun({
           ...request.runRequest,
           preview_id: preview.preview_id,
           excluded_candidate_ids: request.excludedCandidateIds,
-        });
+        }, controller.signal);
+        if (controller.signal.aborted) return;
 
         setPhase("idle");
         void queryClient.invalidateQueries({ queryKey: ["runs"] });
@@ -61,20 +67,34 @@ export function LaunchJobProvider({ children }: { children: ReactNode }) {
           navigate(`/runs/${created.pipeline_run_id}`);
         }
       } catch (cause) {
+        if (controller.signal.aborted) return;
         setError(cause instanceof Error ? cause : new Error("The discovery launch failed."));
         setPhase("failed");
       } finally {
-        inFlightRef.current = false;
+        if (controllerRef.current === controller) {
+          controllerRef.current = null;
+          inFlightRef.current = false;
+        }
       }
     })();
   }, [navigate, queryClient]);
 
+  const cancel = useCallback(() => {
+    if (phase !== "discovering") return;
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    inFlightRef.current = false;
+    setError(null);
+    setPhase("idle");
+  }, [phase]);
+
   const value = useMemo<LaunchJobContextValue>(() => ({
+    cancel,
     error,
     isPending: phase === "discovering" || phase === "starting",
     phase,
     start,
-  }), [error, phase, start]);
+  }), [cancel, error, phase, start]);
 
   return <LaunchJobContext.Provider value={value}>{children}</LaunchJobContext.Provider>;
 }

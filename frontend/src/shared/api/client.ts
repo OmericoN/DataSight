@@ -270,6 +270,7 @@ export type ResetResponse = {
 type RequestOptions = {
   method?: "GET" | "POST";
   body?: unknown;
+  signal?: AbortSignal;
 };
 
 export class ApiError extends Error {
@@ -288,6 +289,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     method: options.method ?? "GET",
     headers: options.body ? { "Content-Type": "application/json" } : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -339,13 +341,13 @@ export const api = {
     );
     return response.events;
   },
-  createRun: (body: RunCreateRequest) =>
-    request<RunCreateResponse>("/api/v1/runs", { method: "POST", body }),
+  createRun: (body: RunCreateRequest, signal?: AbortSignal) =>
+    request<RunCreateResponse>("/api/v1/runs", { method: "POST", body, signal }),
   umDiscoveryProfile: () =>
     request<UMDiscoveryProfile>("/api/v1/discovery/um-profile"),
   openAlexStatus: () => request<OpenAlexStatus>("/api/v1/openalex/status"),
-  discoveryPreview: (body: DiscoveryPreviewRequest) =>
-    request<DiscoveryPreview>("/api/v1/discovery/preview", { method: "POST", body }),
+  discoveryPreview: (body: DiscoveryPreviewRequest, signal?: AbortSignal) =>
+    request<DiscoveryPreview>("/api/v1/discovery/preview", { method: "POST", body, signal }),
   discoveryCandidates: (runId: number, offset = 0, limit = 100, selectedOnly = false) => {
     const params = new URLSearchParams({
       offset: String(offset),
@@ -356,16 +358,20 @@ export const api = {
       `/api/v1/runs/${runId}/discovery-candidates?${params}`,
     );
   },
-  runInsights: (runId: number, offset = 0, limit = 50) => {
+  runResults: (runId: number, offset = 0, limit = 50) => {
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
     return request<PaginatedInsightsResponse>(`/api/v1/runs/${runId}/insights?${params}`);
   },
-  downloadRunCandidatesCsv: (runId: number, columns: string[]) => {
-    const params = new URLSearchParams({ selected_only: "true" });
-    columns.forEach((column) => params.append("columns", column));
-    return requestBlob(`/api/v1/runs/${runId}/discovery-candidates/export.csv?${params}`);
+  runCandidates: (runId: number, offset = 0, limit = 50) => {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    return request<PaginatedInsightsResponse>(`/api/v1/runs/${runId}/candidates?${params}`);
   },
-  downloadRunInsightsCsv: (runId: number, columns: string[]) => {
+  downloadRunCandidateResultsCsv: (runId: number, columns: string[]) => {
+    const params = new URLSearchParams();
+    columns.forEach((column) => params.append("columns", column));
+    return requestBlob(`/api/v1/runs/${runId}/candidates/export.csv?${params}`);
+  },
+  downloadRunInsightResultsCsv: (runId: number, columns: string[]) => {
     const params = new URLSearchParams();
     columns.forEach((column) => params.append("columns", column));
     return requestBlob(`/api/v1/runs/${runId}/insights/export.csv?${params}`);

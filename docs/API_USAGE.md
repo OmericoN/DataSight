@@ -37,6 +37,10 @@ http://localhost:8000/api/v1
 | `GET` | `/runs/{run_id}` | Read detailed run progress. |
 | `GET` | `/runs/{run_id}/events` | Read chronological run events. |
 | `GET` | `/runs/{run_id}/discovery-candidates` | Page through candidates retained for a preview-backed run. |
+| `GET` | `/runs/{run_id}/candidates` | Page through one summary row per selected, PDF-ready paper, including stage pass flags. |
+| `GET` | `/runs/{run_id}/candidates/export.csv` | Export all selected paper summaries, optionally selecting columns. |
+| `GET` | `/runs/{run_id}/insights` | Page through detailed result rows, including selected papers with no detected mention. |
+| `GET` | `/runs/{run_id}/insights/export.csv` | Export all detailed result rows, optionally selecting columns. |
 | `GET` | `/insights` | Preview joined insight rows and the canonical ordered column list. |
 | `GET` | `/insights/export.csv` | Download every insight row as CSV, optionally selecting columns. |
 | `GET` | `/discovery/um-profile` | Inspect UM catalog coverage and estimated funnel phases. |
@@ -92,6 +96,13 @@ curl http://localhost:8000/api/v1/runs/1/events
 ```
 
 ## Insight CSV Export
+
+Run-specific candidates and insights use a friendly `discovery_method` label.
+Candidate summaries contain `pdf_downloaded`, `grobid_converted`, and
+`document_rendered` flags. Detailed insight rows omit these flags and contain
+empty insight fields when a selected paper has no detected mention. Text cells
+that could be interpreted as spreadsheet formulas are prefixed with an apostrophe
+in CSV exports.
 
 `GET /insights` returns `columns` in canonical display/export order and a limited `rows` preview. Each row includes `discovery_mode` and the ordered `discovery_methods` evidence routes. Historical rows without persisted discovery provenance use `unrecorded` and an empty method list.
 

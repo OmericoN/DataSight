@@ -375,6 +375,30 @@ def test_insight_rows_resolve_run_specific_discovery_provenance_without_duplicat
     assert params == (9,)
 
 
+def test_run_result_rows_start_from_selected_candidates_and_left_join_insights():
+    repo, cursor, _ = make_repo()
+    cursor.fetchall_results = [[{
+        "paper_id": "W123",
+        "pdf_downloaded": True,
+        "dataset_name": None,
+    }]]
+
+    rows = repo.export_run_result_rows(9)
+
+    query, params = cursor.executed[-1]
+    assert rows[0]["dataset_name"] is None
+    assert "FROM discovery_candidates dc" in query
+    assert "LEFT JOIN dataset_mentions dm" in query
+    assert "dc.pipeline_run_id = %s" in query
+    assert "dc.included" in query
+    assert "dc.pipeline_ready" in query
+    assert "pis.stage = 'download_pdf'" in query
+    assert "artifact.artifact_type = 'pdf'" in query
+    assert "artifact.artifact_type = 'tei_xml'" in query
+    assert "artifact.artifact_type = 'markdown'" in query
+    assert params == (9,)
+
+
 def test_global_insight_rows_use_latest_provenance_and_label_legacy_rows():
     repo, cursor, _ = make_repo()
     cursor.fetchall_results = [[]]

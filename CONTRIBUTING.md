@@ -39,6 +39,11 @@ bun run dev
 
 ## Checks
 
+GitHub Actions runs the backend tests and type checks, plus the frontend tests and
+production build, on every push and pull request. You can also run the `CI`
+workflow manually from the repository's Actions tab. Dependencies are installed
+from the committed lockfiles; no repository secrets or running services are needed.
+
 Run backend checks before opening a change:
 
 ```powershell

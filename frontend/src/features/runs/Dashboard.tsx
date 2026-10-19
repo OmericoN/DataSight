@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   RiAdminLine,
   RiArrowRightLine,
@@ -128,7 +128,6 @@ import {
   api,
   isActiveRun,
   type HealthResponse,
-  type DiscoveryCandidate,
   type PipelineRunEvent,
   type PipelineRunSummary,
   type ResetResponse,
@@ -158,24 +157,16 @@ const UMDatasetsPage = lazy(() => import("@/features/datasets/UMDatasetsPage"));
 
 const RESET_CONFIRMATION = "RESET DATASIGHT";
 const RUN_RESULT_PAGE_SIZE = 50;
-const CANDIDATE_EXPORT_COLUMNS = [
+const RUN_CANDIDATE_EXPORT_COLUMNS = [
   "paper_id",
-  "title",
-  "doi",
-  "year",
-  "source_url",
-  "open_access_url",
-  "oa_status",
-  "cited_by_count",
-  "primary_source_name",
-  "candidate_strength",
-  "evidence_tier",
-  "evidence_reasons",
-  "matched_um_dataset_ids",
-  "pipeline_ready",
-  "included",
-  "exclusion_reason",
+  "publication_title",
+  "publication_year",
+  "discovery_method",
+  "pdf_downloaded",
+  "grobid_converted",
+  "document_rendered",
 ];
+type RunResultDownloadKind = "candidates" | "insights";
 
 type OutletContext = {
   health: HealthResponse | undefined;
@@ -300,6 +291,7 @@ function Dashboard() {
             }
           />
           <Route path="runs" element={<RunsPage />} />
+          <Route path="runs/:runId/results" element={<RunResultsPage />} />
           <Route path="workspace" element={<WorkspaceRedirect />} />
           <Route path="runs/:runId" element={<WorkspacePage />} />
           <Route path="insights" element={<InsightsPage />} />
@@ -400,11 +392,14 @@ function PipelineShell() {
               <SidebarMenu>
                 {NAV_ITEMS.map((item) => {
                   const isWorkspace =
-                    location.pathname.startsWith("/runs/") ||
+                    (/^\/runs\/\d+$/.test(location.pathname)) ||
                     location.pathname === "/workspace";
+                  const isRunResults = /^\/runs\/\d+\/results$/.test(location.pathname);
                   const isActive = item.workspace
                     ? isWorkspace
-                    : location.pathname.startsWith(item.to);
+                    : item.label === "Runs"
+                      ? location.pathname === "/runs" || isRunResults
+                      : location.pathname.startsWith(item.to);
                   const to = item.workspace ? workspacePath : item.to;
                   const Icon = item.icon;
                   return (
@@ -539,7 +534,6 @@ function PipelineShell() {
 function RunsPage() {
   const { runs, runsLoading } = useOutletData();
   const [search, setSearch] = useState("");
-  const [resultsRun, setResultsRun] = useState<PipelineRunSummary | null>(null);
   const filteredRuns = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) {
@@ -598,14 +592,13 @@ function RunsPage() {
               <div key={run.id} className="grid min-w-0 grid-cols-[2.25rem_minmax(0,1fr)] gap-2">
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button
-                      type="button"
+                    <Link
+                      to={`/runs/${run.id}/results`}
                       aria-label={`View results for Run #${run.id}`}
                       className="flex min-h-20 items-center justify-center rounded-lg border bg-muted/30 text-muted-foreground transition-colors hover:border-primary/50 hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-                      onClick={() => setResultsRun(run)}
                     >
                       <RiFileList3Line className="size-4" />
-                    </button>
+                    </Link>
                   </TooltipTrigger>
                   <TooltipContent side="left">View candidates and insights</TooltipContent>
                 </Tooltip>
@@ -636,45 +629,48 @@ function RunsPage() {
           </div>
         </CardContent>
       </Card>
-      <RunResultsDrawer run={resultsRun} onClose={() => setResultsRun(null)} />
     </div>
   );
 }
 
-function RunResultsDrawer({
-  run,
-  onClose,
-}: {
-  run: PipelineRunSummary | null;
-  onClose: () => void;
-}) {
-  const [tab, setTab] = useState<"candidates" | "insights">("candidates");
+function RunResultsPage() {
+  const { runId } = useParams();
+  const numericRunId = Number(runId);
+  const [tab, setTab] = useState<RunResultDownloadKind>("candidates");
   const [candidateOffset, setCandidateOffset] = useState(0);
   const [insightOffset, setInsightOffset] = useState(0);
   const [downloadOpen, setDownloadOpen] = useState(false);
+  const [downloadKind, setDownloadKind] = useState<RunResultDownloadKind>("candidates");
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
   const [selectedInsight, setSelectedInsight] = useState<Record<string, unknown> | null>(null);
-  const runId = run?.id;
-  const pollInterval = run && isActiveRun(run.status) ? 5000 : false;
+  const runQuery = useQuery({
+    queryKey: ["run", numericRunId],
+    queryFn: () => api.run(numericRunId),
+    enabled: Number.isFinite(numericRunId),
+    refetchInterval: (query) =>
+      isActiveRun(query.state.data?.status) ? 5000 : false,
+  });
+  const pollInterval = runQuery.data && isActiveRun(runQuery.data.status) ? 5000 : false;
   const candidatesQuery = useQuery({
-    queryKey: ["run-candidates", runId, candidateOffset],
-    queryFn: () => api.discoveryCandidates(runId!, candidateOffset, RUN_RESULT_PAGE_SIZE, true),
-    enabled: runId !== undefined,
+    queryKey: ["run-candidates", numericRunId, candidateOffset],
+    queryFn: () => api.runCandidates(numericRunId, candidateOffset, RUN_RESULT_PAGE_SIZE),
+    enabled: Number.isFinite(numericRunId),
     refetchInterval: pollInterval,
   });
   const insightsQuery = useQuery({
-    queryKey: ["run-insights", runId, insightOffset],
-    queryFn: () => api.runInsights(runId!, insightOffset, RUN_RESULT_PAGE_SIZE),
-    enabled: runId !== undefined,
+    queryKey: ["run-insights", numericRunId, insightOffset],
+    queryFn: () => api.runResults(numericRunId, insightOffset, RUN_RESULT_PAGE_SIZE),
+    enabled: Number.isFinite(numericRunId),
     refetchInterval: pollInterval,
   });
+  const candidateColumns = candidatesQuery.data?.columns ?? RUN_CANDIDATE_EXPORT_COLUMNS;
   const insightColumns = insightsQuery.data?.columns ?? [];
-  const activeColumns = tab === "candidates" ? CANDIDATE_EXPORT_COLUMNS : insightColumns;
+  const activeExportColumns = downloadKind === "candidates" ? candidateColumns : insightColumns;
   const downloadMutation = useMutation({
-    mutationFn: (columns: string[]) =>
-      tab === "candidates"
-        ? api.downloadRunCandidatesCsv(runId!, columns)
-        : api.downloadRunInsightsCsv(runId!, columns),
+    mutationFn: ({ kind, selected }: { kind: RunResultDownloadKind; selected: string[] }) =>
+      kind === "candidates"
+        ? api.downloadRunCandidateResultsCsv(numericRunId, selected)
+        : api.downloadRunInsightResultsCsv(numericRunId, selected),
     onSuccess: ({ blob, filename }) => {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -694,10 +690,11 @@ function RunResultsDrawer({
     setInsightOffset(0);
     setDownloadOpen(false);
     setSelectedInsight(null);
-  }, [runId]);
+  }, [numericRunId]);
 
-  function openDownload() {
-    setSelectedColumns(activeColumns);
+  function openDownload(kind: RunResultDownloadKind) {
+    setDownloadKind(kind);
+    setSelectedColumns(kind === "candidates" ? candidateColumns : insightColumns);
     downloadMutation.reset();
     setDownloadOpen(true);
   }
@@ -707,135 +704,114 @@ function RunResultsDrawer({
       const next = new Set(current);
       if (checked) next.add(column);
       else next.delete(column);
-      return activeColumns.filter((candidate) => next.has(candidate));
+      return activeExportColumns.filter((candidate) => next.has(candidate));
     });
   }
 
+  if (!Number.isFinite(numericRunId)) {
+    return <Navigate replace to="/runs" />;
+  }
+
+  const run = runQuery.data;
+
   return (
-    <>
-      <Sheet open={run !== null} onOpenChange={(open) => !open && onClose()}>
-        <SheetContent side="right" className="min-h-0 w-[96vw] max-w-[calc(100vw-1rem)] overflow-hidden sm:max-w-6xl">
-          <SheetHeader className="shrink-0 border-b">
-            <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
-              <div>
-                <SheetTitle>{run?.query || `Run ${run?.id}`} results</SheetTitle>
-                <SheetDescription>
-                  Run #{run?.id} · selected discovery candidates and their canonical final insights.
-                </SheetDescription>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={!activeColumns.length}
-                onClick={openDownload}
-              >
-                <RiDownload2Line data-icon="inline-start" />
-                Download CSV
+    <div className="mx-auto flex max-w-7xl flex-col">
+      <Card className="gap-0 overflow-hidden">
+        <CardHeader className="flex items-start justify-between gap-4 border-b py-4">
+          <div className="min-w-0 space-y-1">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <Link className="hover:text-foreground hover:underline" to="/runs">Runs</Link>
+              <RiArrowRightLine className="size-3.5" aria-hidden="true" />
+              <span>Run #{numericRunId}</span>
+            </div>
+            <CardTitle className="truncate text-base">{run?.query || `Run ${numericRunId}`} results</CardTitle>
+            <CardDescription className="text-xs">
+              Selected papers and their extracted insights; empty insight fields mean no mention was detected.
+            </CardDescription>
+          </div>
+          {run ? <StatusBadge status={run.status} /> : null}
+        </CardHeader>
+        <CardContent className="min-w-0 p-0">
+          {runQuery.isError ? <InlineQueryError title="Run could not be loaded" error={runQuery.error} /> : null}
+          <Tabs value={tab} onValueChange={(value) => { setTab(value as RunResultDownloadKind); setDownloadOpen(false); }} className="gap-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/20 px-3 py-2">
+              <TabsList>
+                <TabsTrigger value="candidates">Candidates{candidatesQuery.data ? <Badge variant="secondary">{candidatesQuery.data.total}</Badge> : null}</TabsTrigger>
+                <TabsTrigger value="insights">Insights{insightsQuery.data ? <Badge variant="secondary">{insightsQuery.data.total}</Badge> : null}</TabsTrigger>
+              </TabsList>
+              <Button type="button" variant="outline" size="sm" disabled={tab === "candidates" ? !candidateColumns.length : !insightColumns.length} onClick={() => openDownload(tab)}>
+                <RiDownload2Line data-icon="inline-start" />Download CSV
               </Button>
             </div>
-          </SheetHeader>
-          <Tabs
-            value={tab}
-            onValueChange={(value) => {
-              setTab(value as "candidates" | "insights");
-              setDownloadOpen(false);
-            }}
-            className="min-h-0 flex-1 px-4 pb-4"
-          >
-            <TabsList className="shrink-0">
-              <TabsTrigger value="candidates">
-                Selected candidates
-                {candidatesQuery.data ? <Badge variant="secondary">{candidatesQuery.data.total}</Badge> : null}
-              </TabsTrigger>
-              <TabsTrigger value="insights">
-                Final insights
-                {insightsQuery.data ? <Badge variant="secondary">{insightsQuery.data.total}</Badge> : null}
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="candidates" className="min-h-0 overflow-auto rounded-lg border">
-              <RunCandidatesTable query={candidatesQuery} />
-              {candidatesQuery.data ? (
-                <ResultPagination
-                  offset={candidateOffset}
-                  pageSize={RUN_RESULT_PAGE_SIZE}
-                  shown={candidatesQuery.data.items.length}
-                  total={candidatesQuery.data.total}
-                  loading={candidatesQuery.isFetching}
-                  onOffset={setCandidateOffset}
-                />
-              ) : null}
+            <TabsContent value="candidates" className="mt-0 min-w-0">
+              <p className="border-b px-3 py-2 text-xs text-muted-foreground">One row per selected paper, with its discovery method and stage pass flags.</p>
+              {candidatesQuery.isLoading ? <TableSkeleton /> : null}
+              {candidatesQuery.isError ? <InlineQueryError title="Candidates could not be loaded" error={candidatesQuery.error} /> : null}
+              {!candidatesQuery.isLoading && !candidatesQuery.isError && !candidatesQuery.data?.rows.length ? <EmptyState icon={RiFileList3Line} title="No selected candidates" description="This run has no included, PDF-ready discovery candidates." /> : null}
+              {candidatesQuery.data?.rows.length ? <RunCandidatesResultTable rows={candidatesQuery.data.rows} /> : null}
+              {candidatesQuery.data ? <ResultPagination offset={candidateOffset} pageSize={RUN_RESULT_PAGE_SIZE} shown={candidatesQuery.data.rows.length} total={candidatesQuery.data.total} loading={candidatesQuery.isFetching} onOffset={setCandidateOffset} /> : null}
             </TabsContent>
-            <TabsContent value="insights" className="min-h-0 overflow-auto rounded-lg border">
-              <RunInsightsTable query={insightsQuery} onSelect={setSelectedInsight} />
-              {insightsQuery.data ? (
-                <ResultPagination
-                  offset={insightOffset}
-                  pageSize={RUN_RESULT_PAGE_SIZE}
-                  shown={insightsQuery.data.rows.length}
-                  total={insightsQuery.data.total}
-                  loading={insightsQuery.isFetching}
-                  onOffset={setInsightOffset}
-                />
-              ) : null}
+            <TabsContent value="insights" className="mt-0 min-w-0">
+              <p className="border-b px-3 py-2 text-xs text-muted-foreground">Detailed mention rows for this run; select a row to inspect every insight field.</p>
+              {insightsQuery.isLoading ? <TableSkeleton /> : null}
+              {insightsQuery.isError ? <InlineQueryError title="Insights could not be loaded" error={insightsQuery.error} /> : null}
+              {!insightsQuery.isLoading && !insightsQuery.isError && !insightsQuery.data?.rows.length ? <EmptyState icon={RiFileList3Line} title="No insight rows" description="No selected candidates are available for this run." /> : null}
+              {insightsQuery.data?.rows.length ? <RunInsightsResultTable rows={insightsQuery.data.rows} onSelect={setSelectedInsight} /> : null}
+              {insightsQuery.data ? <ResultPagination offset={insightOffset} pageSize={RUN_RESULT_PAGE_SIZE} shown={insightsQuery.data.rows.length} total={insightsQuery.data.total} loading={insightsQuery.isFetching} onOffset={setInsightOffset} /> : null}
             </TabsContent>
           </Tabs>
-        </SheetContent>
-      </Sheet>
+        </CardContent>
+      </Card>
       <RunResultsDownloadSheet
         open={downloadOpen}
-        columns={activeColumns}
+        kind={downloadKind}
+        columns={activeExportColumns}
         selectedColumns={selectedColumns}
         pending={downloadMutation.isPending}
         error={downloadMutation.error}
         onOpenChange={setDownloadOpen}
         onColumns={setSelectedColumns}
         onToggle={toggleColumn}
-        onDownload={() => downloadMutation.mutate(selectedColumns)}
+        onDownload={() => downloadMutation.mutate({ kind: downloadKind, selected: selectedColumns })}
       />
       <InsightDetailSheet insight={selectedInsight} onClose={() => setSelectedInsight(null)} />
-    </>
+    </div>
   );
 }
 
-function RunCandidatesTable({ query }: { query: UseQueryResult<Awaited<ReturnType<typeof api.discoveryCandidates>>, Error> }) {
-  if (query.isLoading) return <TableSkeleton />;
-  if (query.isError) return <InlineQueryError title="Candidates could not be loaded" error={query.error} />;
-  const candidates = query.data?.items ?? [];
-  if (!candidates.length) return <EmptyState icon={RiSearchLine} title="No selected candidates" description="This run has no included, PDF-ready discovery candidates." />;
+function RunCandidatesResultTable({ rows }: { rows: Record<string, unknown>[] }) {
   return (
-    <Table className="min-w-[900px]">
-      <TableHeader><TableRow><TableHead>Paper</TableHead><TableHead>Year</TableHead><TableHead>Evidence tier</TableHead><TableHead>Strength</TableHead><TableHead>Discovery evidence</TableHead><TableHead>Access</TableHead></TableRow></TableHeader>
-      <TableBody>{candidates.map((candidate: DiscoveryCandidate) => (
-        <TableRow key={candidate.paper_id}>
-          <TableCell className="max-w-[320px]"><span className="block truncate font-medium">{candidate.title || "Untitled OpenAlex work"}</span><span className="font-mono text-xs text-muted-foreground">{candidate.paper_id}</span></TableCell>
-          <TableCell>{candidate.year ?? "—"}</TableCell>
-          <TableCell><Badge variant={candidate.evidence_tier === "direct" ? "secondary" : "outline"}>{formatStageName(candidate.evidence_tier)}</Badge></TableCell>
-          <TableCell>{Math.round(candidate.candidate_strength)}/100</TableCell>
-          <TableCell className="max-w-[280px]"><div className="flex flex-wrap gap-1">{candidate.evidence_reasons.slice(0, 3).map((reason) => <Badge key={reason} variant="outline">{formatStageName(reason)}</Badge>)}</div></TableCell>
-          <TableCell><Badge variant="secondary">PDF ready</Badge></TableCell>
-        </TableRow>
-      ))}</TableBody>
-    </Table>
+    <div className="max-w-full overflow-x-auto">
+      <Table className="min-w-[820px]">
+        <TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead className="min-w-[340px]">Paper</TableHead><TableHead>Discovery method</TableHead><TableHead>PDF downloaded</TableHead><TableHead>GROBID converted</TableHead><TableHead>Document rendered</TableHead></TableRow></TableHeader>
+        <TableBody>{rows.map((row, index) => (
+          <TableRow key={`${String(row.paper_id)}-${index}`}>
+            <PaperResultCell row={row} />
+            <TableCell><DiscoveryMethodBadge value={row.discovery_method} /></TableCell>
+            {(["pdf_downloaded", "grobid_converted", "document_rendered"] as const).map((column) => <TableCell key={column}><RunStageFlag passed={row[column] === true} /></TableCell>)}
+          </TableRow>
+        ))}</TableBody>
+      </Table>
+    </div>
   );
 }
 
-function RunInsightsTable({ query, onSelect }: { query: UseQueryResult<Awaited<ReturnType<typeof api.runInsights>>, Error>; onSelect: (row: Record<string, unknown>) => void }) {
-  if (query.isLoading) return <TableSkeleton />;
-  if (query.isError) return <InlineQueryError title="Insights could not be loaded" error={query.error} />;
-  const rows = query.data?.rows ?? [];
-  if (!rows.length) return <EmptyState icon={RiFileList3Line} title="No final insights yet" description="No extracted dataset insights are available for this run's selected papers." />;
-  const visibleColumns = ["paper_id", "publication_title", "dataset_name", "dataset_role", "match_status", "match_score", "um_dataset_title"];
-  return (
-    <Table className="min-w-[980px]">
-      <TableHeader><TableRow>{visibleColumns.map((column) => <TableHead key={column}>{insightColumnLabel(column)}</TableHead>)}</TableRow></TableHeader>
-      <TableBody>{rows.map((row, index) => (
-        <TableRow key={`${String(row.paper_id)}-${String(row.dataset_name)}-${index}`} className="cursor-pointer" onClick={() => onSelect(row)}>
-          {visibleColumns.map((column) => <TableCell key={column} className="max-w-[280px] truncate" title={formatInsightCell(column, row[column])}>{formatInsightCell(column, row[column])}</TableCell>)}
-        </TableRow>
-      ))}</TableBody>
-    </Table>
-  );
+function RunInsightsResultTable({ rows, onSelect }: { rows: Record<string, unknown>[]; onSelect: (row: Record<string, unknown>) => void }) {
+  const visibleColumns = ["dataset_name", "dataset_role", "match_status", "match_score", "um_dataset_title"];
+  return <div className="max-w-full overflow-x-auto"><Table className="min-w-[1100px]"><TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead className="min-w-[340px]">Paper</TableHead><TableHead>Discovery method</TableHead>{visibleColumns.map((column) => <TableHead key={column}>{insightColumnLabel(column)}</TableHead>)}</TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${String(row.paper_id)}-${String(row.dataset_name)}-${index}`} className="cursor-pointer" onClick={() => onSelect(row)}><PaperResultCell row={row} /><TableCell><DiscoveryMethodBadge value={row.discovery_method} /></TableCell>{visibleColumns.map((column) => <TableCell key={column} className="max-w-[260px] truncate" title={formatInsightCell(column, row[column])}>{formatInsightCell(column, row[column])}</TableCell>)}</TableRow>)}</TableBody></Table></div>;
+}
+
+function PaperResultCell({ row }: { row: Record<string, unknown> }) {
+  const title = formatInsightCell("publication_title", row.publication_title);
+  return <TableCell className="max-w-[420px]"><p className="truncate font-medium" title={title}>{title}</p><p className="truncate font-mono text-xs text-muted-foreground">{formatInsightCell("paper_id", row.paper_id)}</p></TableCell>;
+}
+
+function DiscoveryMethodBadge({ value }: { value: unknown }) {
+  return <Badge variant="secondary" className="whitespace-nowrap">{formatCell(value)}</Badge>;
+}
+
+function RunStageFlag({ passed }: { passed: boolean }) {
+  return <Badge variant={passed ? "secondary" : "outline"}>{passed ? "Passed" : "Not passed"}</Badge>;
 }
 
 function ResultPagination({ offset, pageSize, shown, total, loading, onOffset }: { offset: number; pageSize: number; shown: number; total: number; loading: boolean; onOffset: (offset: number) => void }) {
@@ -844,8 +820,9 @@ function ResultPagination({ offset, pageSize, shown, total, loading, onOffset }:
   return <div className="flex items-center justify-between gap-3 border-t p-3 text-xs text-muted-foreground"><p>Showing {start}–{end} of {total}</p><div className="flex gap-2"><Button type="button" variant="outline" size="sm" disabled={!offset || loading} onClick={() => onOffset(Math.max(0, offset - pageSize))}>Previous</Button><Button type="button" variant="outline" size="sm" disabled={offset + pageSize >= total || loading} onClick={() => onOffset(offset + pageSize)}>Next</Button></div></div>;
 }
 
-function RunResultsDownloadSheet({ open, columns, selectedColumns, pending, error, onOpenChange, onColumns, onToggle, onDownload }: { open: boolean; columns: string[]; selectedColumns: string[]; pending: boolean; error: Error | null; onOpenChange: (open: boolean) => void; onColumns: (columns: string[]) => void; onToggle: (column: string, checked: boolean) => void; onDownload: () => void }) {
-  return <Sheet open={open} onOpenChange={onOpenChange}><SheetContent side="right" className="min-h-0 w-[92vw] sm:max-w-md"><SheetHeader><SheetTitle>Download run results</SheetTitle><SheetDescription>Choose the columns to include. The CSV contains every row in the active results tab.</SheetDescription></SheetHeader><div className="flex items-center justify-between gap-3 px-4"><p className="text-xs text-muted-foreground">{selectedColumns.length} of {columns.length} columns selected</p><div className="flex gap-2"><Button type="button" variant="ghost" size="xs" onClick={() => onColumns(columns)}>Select all</Button><Button type="button" variant="ghost" size="xs" onClick={() => onColumns([])}>Clear</Button></div></div><ScrollArea className="min-h-0 flex-1 px-4"><div className="grid gap-2 pb-4">{columns.map((column) => <label key={column} className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-2.5 hover:bg-muted/50"><input type="checkbox" aria-label={`Include ${resultColumnLabel(column)}`} checked={selectedColumns.includes(column)} onChange={(event) => onToggle(column, event.target.checked)} className="size-4 accent-primary" /><span className="text-sm">{resultColumnLabel(column)}</span></label>)}</div></ScrollArea>{error ? <div className="px-4"><Alert variant="destructive"><RiErrorWarningLine /><AlertTitle>Download failed</AlertTitle><AlertDescription>{error.message}</AlertDescription></Alert></div> : null}<SheetFooter className="border-t"><Button type="button" disabled={!selectedColumns.length || pending} onClick={onDownload}><RiDownload2Line data-icon="inline-start" />{pending ? "Preparing CSV…" : "Download CSV"}</Button></SheetFooter></SheetContent></Sheet>;
+function RunResultsDownloadSheet({ open, kind, columns, selectedColumns, pending, error, onOpenChange, onColumns, onToggle, onDownload }: { open: boolean; kind: RunResultDownloadKind; columns: string[]; selectedColumns: string[]; pending: boolean; error: Error | null; onOpenChange: (open: boolean) => void; onColumns: (columns: string[]) => void; onToggle: (column: string, checked: boolean) => void; onDownload: () => void }) {
+  const candidateExport = kind === "candidates";
+  return <Sheet open={open} onOpenChange={onOpenChange}><SheetContent side="right" className="min-h-0 w-[92vw] sm:max-w-md"><SheetHeader><SheetTitle>Download {candidateExport ? "candidates" : "insights"} CSV</SheetTitle><SheetDescription>{candidateExport ? "One row per selected paper, with discovery provenance and pipeline stage pass flags." : "Detailed candidate and insight rows with discovery provenance. Stage pass flags are excluded."}</SheetDescription></SheetHeader><div className="flex items-center justify-between gap-3 px-4"><p className="text-xs text-muted-foreground">{selectedColumns.length} of {columns.length} columns selected</p><div className="flex gap-2"><Button type="button" variant="ghost" size="xs" onClick={() => onColumns(columns)}>Select all</Button><Button type="button" variant="ghost" size="xs" onClick={() => onColumns([])}>Clear</Button></div></div><ScrollArea className="min-h-0 flex-1 px-4"><div className="grid gap-2 pb-4">{columns.map((column) => <label key={column} className="flex cursor-pointer items-center gap-3 rounded-lg border bg-background px-3 py-2.5 hover:bg-muted/50"><input type="checkbox" aria-label={`Include ${insightColumnLabel(column)}`} checked={selectedColumns.includes(column)} onChange={(event) => onToggle(column, event.target.checked)} className="size-4 accent-primary" /><span className="text-sm">{insightColumnLabel(column)}</span></label>)}</div></ScrollArea>{error ? <div className="px-4"><Alert variant="destructive"><RiErrorWarningLine /><AlertTitle>Download failed</AlertTitle><AlertDescription>{error.message}</AlertDescription></Alert></div> : null}<SheetFooter className="border-t"><Button type="button" disabled={!selectedColumns.length || pending} onClick={onDownload}><RiDownload2Line data-icon="inline-start" />{pending ? "Preparing CSV…" : `Download ${candidateExport ? "candidates" : "insights"} CSV`}</Button></SheetFooter></SheetContent></Sheet>;
 }
 
 function InsightDetailSheet({ insight, onClose }: { insight: Record<string, unknown> | null; onClose: () => void }) {
@@ -854,11 +831,6 @@ function InsightDetailSheet({ insight, onClose }: { insight: Record<string, unkn
 
 function InlineQueryError({ title, error }: { title: string; error: Error }) {
   return <div className="p-4"><Alert variant="destructive"><RiErrorWarningLine /><AlertTitle>{title}</AlertTitle><AlertDescription>{error.message}</AlertDescription></Alert></div>;
-}
-
-function resultColumnLabel(column: string) {
-  const labels: Record<string, string> = { paper_id: "Paper ID", doi: "DOI", oa_status: "OA status", source_url: "Source URL", open_access_url: "Open-access URL", cited_by_count: "Citation count", matched_um_dataset_ids: "Matched UM dataset IDs", um_dataset_id: "UM dataset ID" };
-  return labels[column] ?? insightColumnLabel(column);
 }
 
 function WorkspaceRedirect() {
@@ -2178,6 +2150,9 @@ function healthChecks(health: HealthResponse | undefined) {
 }
 
 function routeTitle(pathname: string) {
+  if (/^\/runs\/\d+\/results$/.test(pathname)) {
+    return "Run results";
+  }
   if (pathname.startsWith("/runs/")) {
     return "Run workspace";
   }
@@ -2228,18 +2203,35 @@ const DISCOVERY_STRATEGY_LABELS: Record<string, string> = {
 };
 
 function insightColumnLabel(column: string) {
+  const runStageLabels: Record<string, string> = {
+    discovery_methods: "Discovery method",
+    discovery_method: "Discovery method",
+    pdf_downloaded: "PDF downloaded",
+    grobid_converted: "GROBID converted",
+    document_rendered: "Document rendered",
+  };
+  if (runStageLabels[column]) {
+    return runStageLabels[column];
+  }
   return column === "discovery_mode"
     ? "Discovery strategy"
     : titleCase(formatStageName(column));
 }
 
 function formatInsightCell(column: string, value: unknown) {
+  if (isRunStageFlag(column)) {
+    return value === true ? "Passed" : "Not passed";
+  }
   if (column !== "discovery_mode") {
     return formatCell(value);
   }
 
   const rawValue = formatCell(value);
   return DISCOVERY_STRATEGY_LABELS[rawValue] ?? titleCase(formatStageName(rawValue));
+}
+
+function isRunStageFlag(column: string) {
+  return column === "pdf_downloaded" || column === "grobid_converted" || column === "document_rendered";
 }
 
 function formatJsonValue(value: unknown) {

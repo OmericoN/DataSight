@@ -33,6 +33,15 @@ function response(body: unknown, ok = true, status = 200, statusText = "OK") {
   };
 }
 
+function readBlobText(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsText(blob);
+  });
+}
+
 const insightColumns = ["paper_id", "discovery_mode", "discovery_methods"];
 
 const discoveryPhases = [
@@ -295,11 +304,25 @@ function defaultFetchMock(resetResponse = response({
         limit: 50,
       });
     }
+    if (path.startsWith("/api/v1/runs/39/candidates?")) {
+      return response({
+        columns: ["paper_id", "publication_title", "publication_year", "discovery_method", "pdf_downloaded", "grobid_converted", "document_rendered"],
+        rows: [
+          { paper_id: "W900", publication_title: "Secondary analysis of a Maastricht longitudinal cohort", publication_year: 2025, discovery_method: "Smart discovery", pdf_downloaded: true, grobid_converted: true, document_rendered: true },
+          { paper_id: "W902", publication_title: "Candidate without a detected dataset mention", publication_year: 2024, discovery_method: "Smart discovery", pdf_downloaded: true, grobid_converted: true, document_rendered: true },
+        ],
+        total: 2,
+        offset: 0,
+        limit: 50,
+      });
+    }
     if (path.startsWith("/api/v1/runs/39/insights?")) {
       return response({
         columns: [
           "paper_id",
           "publication_title",
+          "publication_year",
+          "discovery_method",
           "dataset_name",
           "dataset_role",
           "match_status",
@@ -310,14 +333,27 @@ function defaultFetchMock(resetResponse = response({
           {
             paper_id: "W900",
             publication_title: "Secondary analysis of a Maastricht longitudinal cohort",
+            publication_year: 2025,
+            discovery_method: "Smart discovery",
             dataset_name: "Maastricht Health Dataset",
             dataset_role: "used",
             match_status: "matched",
             match_score: 0.98,
             um_dataset_title: "Maastricht Health Dataset",
           },
+          {
+            paper_id: "W902",
+            publication_title: "Candidate without a detected dataset mention",
+            publication_year: 2024,
+            discovery_method: "Smart discovery",
+            dataset_name: null,
+            dataset_role: null,
+            match_status: null,
+            match_score: null,
+            um_dataset_title: null,
+          },
         ],
-        total: 1,
+        total: 2,
         offset: 0,
         limit: 50,
       });
@@ -530,44 +566,51 @@ describe("App routed workflow", () => {
     expect(screen.getByText("High-throughput")).toBeInTheDocument();
   });
 
-  it("opens run-scoped candidates and final insights without leaving the Runs list", async () => {
+  it("opens unified run results as a nested Runs page", async () => {
     const fetchMock = defaultFetchMock();
     renderApp(fetchMock, "/runs");
 
-    const resultsButton = await screen.findByRole("button", { name: "View results for Run #39" });
-    fireEvent.click(resultsButton);
+    const resultsLink = await screen.findByRole("link", { name: "View results for Run #39" });
+    fireEvent.click(resultsLink);
 
-    expect(window.location.pathname).toBe("/runs");
+    expect(window.location.pathname).toBe("/runs/39/results");
     expect(await screen.findByText("Maastricht dataset reuse results")).toBeInTheDocument();
     expect(await screen.findByText("Secondary analysis of a Maastricht longitudinal cohort")).toBeInTheDocument();
+    expect(screen.getByText("Candidate without a detected dataset mention")).toBeInTheDocument();
+    expect(screen.getAllByText("Passed").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Smart discovery").length).toBeGreaterThan(0);
+    expect(screen.queryByText("dataset_citation")).not.toBeInTheDocument();
+    expect(screen.getByRole("table").parentElement).toHaveClass("overflow-x-auto");
+    expect(screen.getAllByRole("rowgroup")[0]).toHaveClass("sticky");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/runs/39/discovery-candidates?offset=0&limit=50&selected_only=true",
+      "/api/v1/runs/39/candidates?offset=0&limit=50",
       expect.objectContaining({ method: "GET" }),
     );
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/runs/39/insights?offset=0&limit=50",
-        expect.objectContaining({ method: "GET" }),
-      );
-    });
-
-    const insightsTab = screen.getByRole("tab", { name: /Final insights/ });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/runs/39/insights?offset=0&limit=50",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(screen.getByRole("tab", { name: /Candidates/ })).toHaveAttribute("data-state", "active");
+    const insightsTab = screen.getByRole("tab", { name: /Insights/ });
     fireEvent.mouseDown(insightsTab, { button: 0 });
     await waitFor(() => expect(insightsTab).toHaveAttribute("data-state", "active"));
-    expect(await screen.findByText("used")).toBeInTheDocument();
-    expect(screen.getAllByText("Maastricht Health Dataset").length).toBeGreaterThan(0);
+    expect(screen.getByRole("columnheader", { name: "Discovery method" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "PDF downloaded" })).not.toBeInTheDocument();
   });
 
-  it("downloads selected columns from the active run-results tab", async () => {
+  it("downloads separate candidate summaries and detailed insights", async () => {
     const baseFetch = defaultFetchMock();
     const csvBlob = new Blob(["paper_id\nW900\n"], { type: "text/csv" });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).startsWith("/api/v1/runs/39/discovery-candidates/export.csv?")) {
+      if (
+        String(input).startsWith("/api/v1/runs/39/candidates/export.csv?") ||
+        String(input).startsWith("/api/v1/runs/39/insights/export.csv?")
+      ) {
         return {
           ok: true,
           status: 200,
           statusText: "OK",
-          headers: { get: () => 'attachment; filename="datasight-run-39-candidates.csv"' },
+          headers: { get: () => 'attachment; filename="datasight-run-39-export.csv"' },
           blob: async () => csvBlob,
         };
       }
@@ -579,20 +622,42 @@ describe("App routed workflow", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     renderApp(fetchMock, "/runs");
 
-    fireEvent.click(await screen.findByRole("button", { name: "View results for Run #39" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Download CSV" }));
-    expect(screen.getByLabelText("Include Paper ID")).toBeChecked();
+    fireEvent.click(await screen.findByRole("link", { name: "View results for Run #39" }));
+    const candidatesButton = await screen.findByRole("button", { name: "Download CSV" });
+    await waitFor(() => expect(candidatesButton).toBeEnabled());
+    fireEvent.click(candidatesButton);
+    expect(screen.getByLabelText("Include Paper Id")).toBeChecked();
+    expect(screen.getByLabelText("Include Discovery method")).toBeChecked();
+    expect(screen.getByLabelText("Include PDF downloaded")).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-    fireEvent.click(screen.getByLabelText("Include Paper ID"));
-    fireEvent.click(screen.getAllByRole("button", { name: "Download CSV" }).at(-1)!);
+    fireEvent.click(screen.getByLabelText("Include Paper Id"));
+    fireEvent.click(screen.getByRole("button", { name: "Download candidates CSV" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/runs/39/discovery-candidates/export.csv?selected_only=true&columns=paper_id",
+        "/api/v1/runs/39/candidates/export.csv?columns=paper_id",
         { method: "GET" },
       );
     });
-    expect(createObjectURL).toHaveBeenCalledWith(csvBlob);
+
+    const insightsTab = screen.getByRole("tab", { name: /Insights/ });
+    fireEvent.mouseDown(insightsTab, { button: 0 });
+    await waitFor(() => expect(insightsTab).toHaveAttribute("data-state", "active"));
+    fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
+    expect(screen.getByLabelText("Include Discovery method")).toBeChecked();
+    expect(screen.queryByLabelText("Include PDF downloaded")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    fireEvent.click(screen.getByLabelText("Include Paper Id"));
+    fireEvent.click(screen.getByLabelText("Include Discovery method"));
+    fireEvent.click(screen.getByRole("button", { name: "Download insights CSV" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/runs/39/insights/export.csv?columns=paper_id&columns=discovery_method",
+        { method: "GET" },
+      );
+    });
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
   });
 
   it("downloads all insights with the selected columns", async () => {
@@ -639,8 +704,8 @@ describe("App routed workflow", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
     expect(screen.getByLabelText("Include Paper Id")).toBeChecked();
-    expect(screen.getByLabelText("Include Discovery Methods")).toBeChecked();
-    fireEvent.click(screen.getByLabelText("Include Discovery Methods"));
+    expect(screen.getByLabelText("Include Discovery method")).toBeChecked();
+    fireEvent.click(screen.getByLabelText("Include Discovery method"));
     fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
 
     await waitFor(() => {
@@ -908,6 +973,34 @@ describe("App routed workflow", () => {
     await waitFor(() => expect(screen.getByRole("link", { name: "Launch" })).toBeInTheDocument());
   });
 
+  it("cancels an in-flight launch before creating a pipeline run", async () => {
+    const baseFetch = defaultFetchMock();
+    let previewSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/v1/discovery/preview" && init?.method === "POST") {
+        previewSignal = init.signal ?? undefined;
+        return new Promise<ReturnType<typeof response>>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        });
+      }
+      return baseFetch(input, init);
+    });
+    renderApp(fetchMock, "/launch");
+
+    const runButton = await screen.findByRole("button", { name: "Run pipeline" });
+    await waitFor(() => expect(runButton).toBeEnabled());
+    fireEvent.click(runButton);
+
+    const cancelButton = await screen.findByRole("button", { name: "Cancel launch" });
+    expect(screen.getByRole("button", { name: "Preparing discovery…" })).toBeDisabled();
+    fireEvent.click(cancelButton);
+
+    await waitFor(() => expect(previewSignal?.aborted).toBe(true));
+    expect(await screen.findByRole("button", { name: "Run pipeline" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Cancel launch" })).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith("/api/v1/runs", expect.anything());
+  });
+
   it("selects a reproducible random sample strategy", async () => {
     const fetchMock = defaultFetchMock();
     renderApp(fetchMock, "/launch");
@@ -935,6 +1028,63 @@ describe("App routed workflow", () => {
     });
     expect(await screen.findAllByText("Not scored")).not.toHaveLength(0);
     expect(screen.getByText(/Random inclusion is not evidence of dataset use/)).toBeInTheDocument();
+  });
+
+  it("downloads every launch-preview candidate with its friendly discovery method", async () => {
+    const fetchMock = defaultFetchMock();
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:launch-candidates");
+    const revokeObjectURL = vi.fn();
+    let downloadedFilename = "";
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloadedFilename = this.download;
+    });
+    renderApp(fetchMock, "/launch");
+
+    const previewButton = await screen.findByRole("button", { name: "Preview results" });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+    const downloadButton = await screen.findByRole("button", { name: "Download selected CSV" });
+    fireEvent.click(downloadButton);
+
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    const csvBlob = createObjectURL.mock.calls[0]?.[0];
+    if (!csvBlob) throw new Error("Candidate CSV blob was not created.");
+    const csv = await readBlobText(csvBlob);
+    expect(csv).toContain("id,title,discovery_method\r\n");
+    expect(csv).toContain('"W900","Secondary analysis of a Maastricht longitudinal cohort","Smart discovery"');
+    expect(csv).not.toContain("W901");
+    expect(csv).not.toContain("dataset_citation");
+    expect(downloadedFilename).toBe("datasight-preview-preview-123-candidates.csv");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:launch-candidates");
+
+    fireEvent.click(screen.getByRole("switch", { name: "Include Secondary analysis of a Maastricht longitudinal cohort" }));
+    expect(downloadButton).toBeDisabled();
+  });
+
+  it.each(["=1+1", "  =1+1", "\n=1+1"])("escapes spreadsheet formulas in preview CSV titles: %j", async (title) => {
+    const baseFetch = defaultFetchMock();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const result = await baseFetch(input, init);
+      if (String(input) !== "/api/v1/discovery/preview" || init?.method !== "POST") return result;
+      const preview = await result.json() as { candidates: Array<Record<string, unknown>> };
+      return response({ ...preview, candidates: preview.candidates.map((candidate) => ({ ...candidate, title })) });
+    });
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:safe-preview");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    renderApp(fetchMock, "/launch");
+
+    const previewButton = await screen.findByRole("button", { name: "Preview results" });
+    await waitFor(() => expect(previewButton).toBeEnabled());
+    fireEvent.click(previewButton);
+    fireEvent.click(await screen.findByRole("button", { name: "Download selected CSV" }));
+
+    const blob = createObjectURL.mock.calls[0]?.[0];
+    if (!blob) throw new Error("Candidate CSV blob was not created.");
+    expect(await readBlobText(blob)).toContain(`"'${title}"`);
   });
 
   it("previews the adaptive funnel and launches only reviewed PDF-ready candidates", async () => {
