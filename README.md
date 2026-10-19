@@ -1,6 +1,10 @@
-<div align="center">
-  <img src="assets/banner.png" width="600" alt="DataSight" />
-</div>
+<p align="center">
+  <img
+    src="assets/new-banner.png"
+    alt="DataSight Logo"
+    width="650"
+  />
+</p>
 
 <div align="center">
   <a href="https://opensource.org/licenses/MIT" target="_blank">
@@ -15,9 +19,9 @@
 
 DataSight finds dataset references that are easy to miss in scholarly publications. It discovers open-access papers, downloads PDFs, converts them into structured text, detects dataset mentions, and matches those mentions against Maastricht University dataset metadata.
 
-```text
-discover -> download_pdf -> grobid_convert -> render_document -> detect_mentions -> extract_features -> match_um_dataset -> export_insights
-```
+## Processing Pipeline
+
+![DataSight Processing Pipeline](assets/datasight-pipeline.png)
 
 ## Why It Exists
 
