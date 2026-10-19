@@ -43,6 +43,8 @@ GitHub Actions runs the backend tests and type checks, plus the frontend tests a
 production build, on every push and pull request. You can also run the `CI`
 workflow manually from the repository's Actions tab. Dependencies are installed
 from the committed lockfiles; no repository secrets or running services are needed.
+The supplied-catalog shape test runs only when the ignored `data/um_dataset`
+directory is present. Importer tests using generated fixtures run in every checkout.
 
 Run backend checks before opening a change:
 

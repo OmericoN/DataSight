@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -101,6 +103,8 @@ def test_load_cp1252_tsv_with_singular_affiliations_and_quality_warnings(tmp_pat
 
 def test_supplied_um_catalog_has_expected_shape():
     catalog = ROOT.parent / "data" / "um_dataset"
+    if not catalog.exists():
+        pytest.skip("The local UM catalog is not included in repository checkouts.")
 
     bundle = load_um_openalex_export_bundle(catalog)
 
