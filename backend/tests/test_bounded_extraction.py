@@ -12,7 +12,7 @@ class Client:
     def __init__(self): self.calls = []
     def complete(self, payload, model, record_attempt, validate):
         self.before_attempt()
-        self.calls.append(SparseFeatures if issubclass(model, SparseFeatures) else model)
+        self.calls.append(SparseFeatures if issubclass(model, SparseFeatures) else OccurrenceAnswers if issubclass(model, OccurrenceAnswers) else model)
         data = json.loads(payload['messages'][1]['content'])
         if model is CompactUnits:
             result = CompactUnits(selections=[(i, 'Alpha', 'r')
@@ -20,6 +20,10 @@ class Client:
         elif issubclass(model, SparseFeatures):
             result = SparseFeatures(observations=[])
         else:
+            schema = model.model_json_schema()
+            fields = schema['$defs']['RequestedField']['properties']['f']['enum']
+            assert 'use.roles' in fields and 'identity.name' not in fields
+            assert schema['properties']['occurrences']['minItems'] == len(data['occurrences'])
             result = OccurrenceAnswers.model_validate({'occurrences': [
                 {'occurrence_id': item['occurrence_id'], 'observations': []} for item in data['occurrences']]})
         validate(result)
@@ -85,7 +89,7 @@ def test_missing_occurrence_ids_trigger_repair_then_split():
     class Missing(Client):
         def complete(self, payload, model, record_attempt, validate):
             data = json.loads(payload['messages'][1]['content'])
-            if model is OccurrenceAnswers and len(data['occurrences']) > 1:
+            if issubclass(model, OccurrenceAnswers) and len(data['occurrences']) > 1:
                 from datasight.infrastructure.llm.client import InvalidCompletion
                 with pytest.raises(ValueError, match='occurrence ID'):
                     validate(OccurrenceAnswers(occurrences=[]))

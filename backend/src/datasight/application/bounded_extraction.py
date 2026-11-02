@@ -72,6 +72,14 @@ def field_guide(models):
             for group, model in models.items() for field, definition in model.model_fields.items()}
 
 
+def requested_features(models):
+    fields = tuple(field_guide(models))
+    observation = create_model('RequestedField', __base__=SparseField,
+        field=(Literal[fields], Field(alias='f')))
+    return create_model('RequestedFeatures', __base__=SparseFeatures,
+        observations=(list[observation], Field(max_length=len(fields))))
+
+
 def indexed_blocks(text):
     boundaries = [0]
     for match in re.finditer(r'.+?(?:[.!?](?=\s)|\n|$)', text, re.S):
@@ -235,10 +243,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 'evidence': [{'evidence_id': item.evidence_id, 'quote': item.quote, 'placement': item.placement,
                               'section': item.section_heading} for item in evidence]}
         # A field repair must be unable to regenerate the other, already validated fields.
-        observation = create_model('RequestedField', __base__=SparseField,
-            field=(Literal[tuple(data['fields'])], Field(alias='f')))
-        response = create_model('RequestedFeatures', __base__=SparseFeatures,
-            observations=(list[observation], Field(max_length=len(data['fields']))))
+        response = requested_features(models)
         def validate(result):
             allowed = set(field_guide(models))
             paths = [item.field for item in result.observations]
@@ -289,6 +294,12 @@ Return no lines when there is no dataset evidence. Never output quotations.
 
     def occurrence_batch(self, entries):
         models = {'use': c.UseFeatures, 'citation': c.CitationFeatures}
+        observation = requested_features(models).model_fields['observations'].annotation
+        answer = create_model('RequestedOccurrence', __base__=OccurrenceAnswer,
+            occurrence_id=(Literal[tuple(oid for oid, _, _ in entries)], ...),
+            observations=(observation, Field(max_length=len(field_guide(models)))))
+        response = create_model('RequestedOccurrences', __base__=OccurrenceAnswers,
+            occurrences=(list[answer], Field(min_length=len(entries), max_length=len(entries))))
         data = {'fields': field_guide(models), 'occurrences': [
             {'occurrence_id': oid, 'target_dataset': target,
              'evidence': [{'evidence_id': item.evidence_id, 'quote': item.quote, 'placement': item.placement,
@@ -303,9 +314,9 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 decode(item.observations, models, sources[item.occurrence_id])
         try:
             try:
-                result = self.request(SPARSE + '\nReturn every supplied occurrence ID exactly once.', data, OccurrenceAnswers, validate)
+                result = self.request(SPARSE + '\nReturn every supplied occurrence ID exactly once.', data, response, validate)
             except InvalidCompletion:
-                result = self.request(SPARSE + '\nRepair the batch: return every occurrence ID exactly once, with supported typed values.', data, OccurrenceAnswers, validate)
+                result = self.request(SPARSE + '\nRepair the batch: return every occurrence ID exactly once, with supported typed values.', data, response, validate)
             sources = {oid: evidence for oid, _, evidence in entries}
             return {item.occurrence_id: decode(item.observations, models, sources[item.occurrence_id]) for item in result.occurrences}
         except (InvalidCompletion, OutputTruncated, RequestTooLarge):
