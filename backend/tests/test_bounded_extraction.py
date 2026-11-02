@@ -149,6 +149,28 @@ def test_retry_wait_cannot_exceed_remaining_budget(monkeypatch):
         client.close()
 
 
+def test_budget_limited_read_timeout_does_not_send_a_futile_retry(monkeypatch):
+    import requests
+    from datasight import config
+    from datasight.infrastructure.llm.client import GatewayClient
+    monkeypatch.setattr(config, 'LLM_BASE_URL', 'https://example.test')
+    monkeypatch.setattr(config, 'LLM_API_KEY', 'test-key')
+    client = GatewayClient()
+    client.before_attempt = lambda: 10
+    client.remaining_time = lambda: 1
+    def timeout(*args, **kwargs):
+        raise requests.ReadTimeout('read deadline')
+    monkeypatch.setattr(client.session, 'post', timeout)
+    monkeypatch.setattr('time.sleep', lambda seconds: pytest.fail('Deadline timeout must not retry'))
+    attempts = []
+    try:
+        with pytest.raises(ExtractionBudgetExceeded, match='request read deadline'):
+            client.complete({}, SparseFeatures, attempts.append, lambda value: None)
+        assert len(attempts) == 1
+    finally:
+        client.close()
+
+
 def test_only_invalid_fields_are_repaired_and_valid_facts_are_reused():
     class Partial(Client):
         def complete(self, payload, model, record_attempt, validate):

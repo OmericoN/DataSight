@@ -139,7 +139,8 @@ class GatewayClient:
             retry = False
             try:
                 connect_timeout = min(5, remaining / 2)
-                response = self.session.post(config.LLM_BASE_URL + "/v1/chat/completions", json=payload, headers=self._headers(), timeout=(connect_timeout, min(config.LLM_TIMEOUT_SEC, max(.001, remaining-connect_timeout))))
+                read_timeout = min(config.LLM_TIMEOUT_SEC, max(.001, remaining-connect_timeout))
+                response = self.session.post(config.LLM_BASE_URL + "/v1/chat/completions", json=payload, headers=self._headers(), timeout=(connect_timeout, read_timeout))
                 status = response.status_code
                 try:
                     response_data = response.json()
@@ -166,6 +167,11 @@ class GatewayClient:
                     raise InferenceError("Completion did not stop normally")
                 parsed = response_model.model_validate_json(choices[0]["message"]["content"])
                 validate(parsed)
+            except requests.ReadTimeout:
+                deadline_limited = bool(getattr(self, 'remaining_time', None)) and read_timeout < config.LLM_TIMEOUT_SEC
+                retry = not deadline_limited
+                error = (ExtractionBudgetExceeded('extraction_budget_exceeded: request read deadline; resume explicitly')
+                         if deadline_limited else InferenceUnavailable('Gateway connection failed or timed out; extraction can be resumed'))
             except (requests.Timeout, requests.ConnectionError):
                 retry = True
                 error = InferenceUnavailable("Gateway connection failed or timed out; extraction can be resumed")

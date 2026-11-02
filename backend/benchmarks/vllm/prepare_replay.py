@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 from datasight.application.llm_extraction import extraction_configuration, fingerprint, prepare_source
@@ -14,10 +15,16 @@ def prepare(pdf_paths):
     converter.ensure_available()
     sources = []
     for pdf in pdf_paths:
+        conversion_started = time.monotonic()
         converted = converter.convert_pdf(pdf, paper_id=pdf.stem)
+        conversion_seconds = time.monotonic() - conversion_started
         if not converted.success:
             raise ValueError(f'Conversion failed for {pdf.stem}: {converted.failure_category}')
+        render_started = time.monotonic()
         text, path, digest = prepare_source({'xml_path': str(converted.xml_path)})
+        print(json.dumps({'paper_id': pdf.stem, 'conversion_seconds': round(conversion_seconds, 3),
+                          'conversion_cache_reused': converted.quality_metrics.get('cache_reused', False),
+                          'source_preparation_seconds': round(time.monotonic()-render_started, 3)}), flush=True)
         sources.append((pdf.stem, path, digest, len(text)))
     settings = extraction_configuration(legacy=True)
     with PipelineRepository() as repo:

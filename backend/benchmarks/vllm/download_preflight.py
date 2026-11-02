@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import time
 
 from datasight.application.pipeline_services import download_pdf_batch, discover_publications
 from datasight.infrastructure.persistence.repository import PipelineRepository
@@ -32,11 +33,13 @@ if __name__ == '__main__':
             with PipelineRepository() as repo:
                 repo.finish_pipeline_run(run_id, 'failed')
             raise
+    download_started = time.monotonic()
     result = download_pdf_batch(pipeline_run_id=run_id)
+    download_seconds = time.monotonic() - download_started
     if args.preview_id:
         with PipelineRepository() as repo:
             repo.finish_pipeline_run(run_id, result['status'])
-    print(json.dumps({'run_id': run_id, 'status': result['status'],
+    print(json.dumps({'run_id': run_id, 'status': result['status'], 'download_seconds': round(download_seconds, 3),
                       'papers': [{'paper_id': row['paper_id'], 'success': row['success'],
                                   'failure_category': row.get('failure_category'),
                                   'attempts': (row.get('quality_metrics') or {}).get('attempts'),
