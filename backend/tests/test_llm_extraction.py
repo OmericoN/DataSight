@@ -225,6 +225,21 @@ def test_conservative_grouping_never_uses_article_identifiers_as_dataset_identit
     assert len(consolidate([entry("Alpha"), entry("Alpha", literal="10.1/other")])) == 2
 
 
+def test_duplicate_anchor_consolidation_retains_both_occurrence_feature_sets():
+    from datasight.domain.extraction import CitationFeatures, Occurrence
+    identity = IdentityFeatures(name=Observed[str](state='reported', values=[EvidenceValue(value='Alpha', evidence_ids=['e1'])]))
+    used = Occurrence(occurrence_id='o1', evidence_ids=['e1'], bibliography_only=False, use=UseFeatures.model_validate({
+        'roles': {'state': 'reported', 'values': [{'value': 'used', 'evidence_ids': ['e1']}]}}))
+    cited = Occurrence(occurrence_id='o2', evidence_ids=['e1'], bibliography_only=False, citation=CitationFeatures.model_validate({
+        'version': {'state': 'reported', 'values': [{'value': 'v2', 'evidence_ids': ['e1']}]}}))
+    entries = [DatasetEntry(dataset_local_id=f'd{i}', display_name='Alpha', identity=identity,
+                            occurrences=[occurrence]) for i, occurrence in enumerate((used, cited))]
+    result = consolidate(entries)
+    assert len(result) == len(result[0].occurrences) == 1
+    assert result[0].occurrences[0].use.roles.values[0].value == 'used'
+    assert result[0].occurrences[0].citation.version.values[0].value == 'v2'
+
+
 def test_source_snapshot_is_immutable_and_does_not_modify_pruned_input(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "EXTRACTIONS_DIR", tmp_path / "extractions")
     xml = tmp_path / "paper.xml"

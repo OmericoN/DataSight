@@ -232,8 +232,18 @@ def consolidate(entries: list[contract.DatasetEntry]) -> list[contract.DatasetEn
                 continue
             for group in ("identity", "use", "findability", "accessibility", "interoperability", "reusability"):
                 setattr(target, group, merge_features(getattr(target, group), getattr(entry, group)))
-            existing = {tuple(occ.evidence_ids) for occ in target.occurrences}
-            target.occurrences.extend(occ for occ in entry.occurrences if tuple(occ.evidence_ids) not in existing)
+            existing = {tuple(occ.evidence_ids): occ for occ in target.occurrences}
+            for occurrence in entry.occurrences:
+                key = tuple(occurrence.evidence_ids)
+                if key in existing:
+                    saved = existing[key]
+                    saved.use = merge_features(saved.use, occurrence.use)
+                    saved.citation = merge_features(saved.citation, occurrence.citation)
+                    saved.citation_links = list({link.model_dump_json(): link for link in
+                                                 saved.citation_links + occurrence.citation_links}.values())
+                else:
+                    target.occurrences.append(occurrence)
+                    existing[key] = occurrence
             target.review_reasons = sorted(set(target.review_reasons + entry.review_reasons))
         else:
             if matches:
