@@ -17,6 +17,12 @@ ATTEMPT_COLUMNS = ["run_key", "paper_id", "extraction_id", "work_key", "request_
 SERVING_SETTINGS = {"max_num_seqs", "max_model_len", "max_num_batched_tokens",
                     "gpu_memory_utilization", "dtype", "prefix_caching", "chunked_prefill",
                     "tensor_parallel_size"}
+EXTRACTION_SETTINGS = {'schema_version', 'prompt_version', 'llm_model', 'model_revision',
+                       'renderer_version', 'render_profile', 'chunk_characters', 'overlap_characters',
+                       'feature_batching', 'context_tokens', 'max_prompt_characters', 'template_reserve_tokens',
+                       'temperature', 'max_tokens', 'enable_thinking', 'ordinary_seconds', 'ordinary_attempts',
+                       'long_seconds', 'long_attempts', 'long_source_characters', 'long_reference_occurrences',
+                       'occurrence_batch_size'}
 CODE_FILES = (
     "compose.yaml",
     "backend/src/datasight/application/extraction_engine.py",
@@ -102,6 +108,8 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
         if metrics and status in {"successful", "failed", "interrupted"} and int(metrics.get("attempts", 0)) != len(request_rows):
             raise ValueError(f"Attempt count mismatch for {paper_id}")
         errors = sorted({row["error_category"] for row in request_rows if row["error_category"]})
+        if extraction.get('error', '').startswith('extraction_budget_exceeded:'):
+            errors.append('extraction_budget_exceeded')
         if status == "failed" and not request_rows:
             errors.append("source_preparation_or_upstream")
         durations = sorted(number(row["elapsed_seconds"]) for row in request_rows)
@@ -145,6 +153,9 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
     write_csv(output_dir / "request_attempts.csv", [{'run_key': run_key, **row} for row in attempts], ATTEMPT_COLUMNS)
     manifest = {key: metadata[key] for key in required}
     manifest['run_key'] = run_key
+    manifest['extraction_configurations'] = {
+        row['paper_id']: {key: value for key, value in json.loads(row.get('config') or '{}').items()
+                          if key in EXTRACTION_SETTINGS} for row in extractions}
     root = Path(__file__).resolve().parents[3]
     manifest.update({"started_utc": started, "finished_utc": finished,
                      "source_hashes": {row["paper_id"]: row["source_sha256"] for row in paper_rows},

@@ -185,3 +185,5 @@ def test_truncation_splits_evidence_without_retrying_the_same_payload():
     BoundedExtractionEngine(MemoryRequests(), client, 1, 'Alpha').sparse('Alpha', evidence, {'identity': c.IdentityFeatures})
     assert client.calls == ['truncated', SparseFeatures, SparseFeatures]
     assert set(SparseFeatures.model_json_schema()['$defs']['SparseField']['properties']) == {'f', 's', 'v', 'e'}
+    fields = SparseFeatures.model_json_schema()['$defs']['SparseField']['properties']['f']['enum']
+    assert 'use.roles' in fields and 'usage.used' not in fields

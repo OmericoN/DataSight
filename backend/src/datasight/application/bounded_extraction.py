@@ -23,7 +23,8 @@ GROUPS = {
 
 class SparseField(c.StrictModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
-    field: str = Field(alias='f')
+    field: Literal[tuple(f'{group}.{field}' for group, model in
+                        {**GROUPS, 'citation': c.CitationFeatures}.items() for field in model.model_fields)] = Field(alias='f')
     state: Literal['reported', 'unclear', 'conflicting'] = Field(alias='s')
     values_json: str = Field(alias='v')
     evidence_ids: list[str] = Field(alias='e')
