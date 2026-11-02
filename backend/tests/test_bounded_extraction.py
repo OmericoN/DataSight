@@ -21,11 +21,11 @@ class Client:
             result = SparseFeatures(observations=[])
         else:
             schema = model.model_json_schema()
-            fields = schema['$defs']['RequestedField']['properties']['f']['enum']
-            assert 'use.roles' in fields and 'identity.name' not in fields
+            assert 'use.roles' in data['fields'].values() and 'identity.name' not in data['fields'].values()
+            assert set(schema['$defs']['CompactOccurrenceFields']['properties']) == set(data['fields'])
             assert schema['properties']['occurrences']['minItems'] == len(data['occurrences'])
-            result = OccurrenceAnswers.model_validate({'occurrences': [
-                {'occurrence_id': item['occurrence_id'], 'observations': []} for item in data['occurrences']]})
+            result = model.model_validate({'occurrences': [
+                {'occurrence_id': item['occurrence_id'], 'fields': {}} for item in data['occurrences']]})
         validate(result)
         record_attempt({'elapsed_seconds': .1, 'http_status': 200, 'response': {}, 'error': None})
         return result
@@ -195,3 +195,18 @@ def test_truncation_splits_evidence_without_retrying_the_same_payload():
     assert set(SparseFeatures.model_json_schema()['$defs']['SparseField']['properties']) == {'f', 's', 'v', 'e'}
     fields = SparseFeatures.model_json_schema()['$defs']['SparseField']['properties']['f']['enum']
     assert 'use.roles' in fields and 'usage.used' not in fields
+
+
+def test_compact_occurrences_preserve_types_and_translate_local_evidence_indices():
+    from datasight.application.bounded_extraction import compact_occurrence_fields, decode_compact
+    models = {'use': c.UseFeatures, 'citation': c.CitationFeatures}
+    fields, guide = compact_occurrence_fields(models, 1)
+    evidence = c.Evidence(evidence_id='e1', block_id='b', quote='We used Alpha.', char_start=0, char_end=14,
+                          section_heading=None, standardized_section='other', placement='body')
+    result = decode_compact(fields.model_validate({'0': ['r', ['used'], [0]]}), models, [evidence])
+    assert result['use'].roles.values[0].value == 'used'
+    assert result['use'].roles.values[0].evidence_ids == ['e1']
+    assert result['citation'] == c.CitationFeatures()
+    for value in [['r', ['invented-role'], [0]], ['r', ['used'], [1]]]:
+        with pytest.raises(ValueError):
+            fields.model_validate({'0': value})

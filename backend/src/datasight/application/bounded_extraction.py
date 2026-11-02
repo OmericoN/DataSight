@@ -38,9 +38,13 @@ class CompactUnits(c.StrictModel):
     selections: list[tuple[int, str | None, Literal['r', 's', 'a']]]
 
 
+class CompactFields(c.StrictModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+
+
 class OccurrenceAnswer(c.StrictModel):
     occurrence_id: str
-    observations: list[SparseField]
+    fields: CompactFields
 
 
 class OccurrenceAnswers(c.StrictModel):
@@ -80,6 +84,26 @@ def requested_features(models):
         observations=(list[observation], Field(max_length=len(fields))))
 
 
+def compact_occurrence_fields(models, evidence_count):
+    fields, guide = {}, {}
+    for group, model in models.items():
+        for name, definition in model.model_fields.items():
+            value = definition.annotation.model_fields['values'].annotation.__args__[0].model_fields['value'].annotation
+            index = str(len(fields))
+            path = f'{group}.{name}'
+            fields[path] = (tuple[Literal['r', 'u', 'c'], list[value], list[Literal[tuple(range(evidence_count))]]] | None,
+                            Field(default=None, alias=index))
+            guide[index] = path
+    return create_model('CompactOccurrenceFields', __base__=CompactFields, **fields), guide
+
+
+def decode_compact(fields, models, evidence):
+    observations = [SparseField(field=path, state={'r': 'reported', 'u': 'unclear', 'c': 'conflicting'}[value[0]],
+                               values_json=json.dumps(value[1]), evidence_ids=[evidence[i].evidence_id for i in value[2]])
+                    for path, value in fields.model_dump(mode='json').items() if value is not None]
+    return decode(observations, models, evidence)
+
+
 def indexed_blocks(text):
     boundaries = [0]
     for match in re.finditer(r'.+?(?:[.!?](?=\s)|\n|$)', text, re.S):
@@ -110,6 +134,16 @@ URL target: landing_page, download, documentation, code, publication, unknown.
 License scope: dataset, code, article, unknown. License name and url may be null.
 Populate every supported requested fact, especially the explicit dataset name and
 whether the current publication used or created it. Do not omit supported facts.
+"""
+
+COMPACT_OCCURRENCES = INSTRUCTIONS + """Extract only the requested use/citation facts for each occurrence.
+The fields guide maps numeric JSON keys to field names. Return every numeric key:
+null if not reported, otherwise [state, [typed values], [local evidence indices]].
+State r=reported, u=unclear, c=conflicting. Use only the schema's allowed values.
+Every factual string/number must occur literally in its cited quote. Do not paraphrase.
+Classify use by the current publication separately from claims about prior work.
+Do not report identity fields. Return each supplied occurrence ID exactly once.
+Emit MINIFIED JSON on ONE line: no indentation, newlines or spaces outside strings.
 """
 
 
@@ -294,16 +328,16 @@ Return no lines when there is no dataset evidence. Never output quotations.
 
     def occurrence_batch(self, entries):
         models = {'use': c.UseFeatures, 'citation': c.CitationFeatures}
-        observation = requested_features(models).model_fields['observations'].annotation
+        fields, guide = compact_occurrence_fields(models, max(len(evidence) for _, _, evidence in entries))
         answer = create_model('RequestedOccurrence', __base__=OccurrenceAnswer,
             occurrence_id=(Literal[tuple(oid for oid, _, _ in entries)], ...),
-            observations=(observation, Field(max_length=len(field_guide(models)))))
+            fields=(fields, ...))
         response = create_model('RequestedOccurrences', __base__=OccurrenceAnswers,
             occurrences=(list[answer], Field(min_length=len(entries), max_length=len(entries))))
-        data = {'fields': field_guide(models), 'occurrences': [
+        data = {'fields': guide, 'occurrences': [
             {'occurrence_id': oid, 'target_dataset': target,
-             'evidence': [{'evidence_id': item.evidence_id, 'quote': item.quote, 'placement': item.placement,
-                           'section': item.section_heading} for item in evidence]}
+             'evidence': [{'index': i, 'quote': item.quote, 'placement': item.placement,
+                           'section': item.section_heading} for i, item in enumerate(evidence)]}
             for oid, target, evidence in entries]}
         def validate(result):
             ids = [item.occurrence_id for item in result.occurrences]
@@ -311,14 +345,14 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 raise ValueError('Missing, duplicate, or unknown occurrence ID')
             sources = {oid: evidence for oid, _, evidence in entries}
             for item in result.occurrences:
-                decode(item.observations, models, sources[item.occurrence_id])
+                decode_compact(item.fields, models, sources[item.occurrence_id])
         try:
             try:
-                result = self.request(SPARSE + '\nReturn every supplied occurrence ID exactly once.', data, response, validate)
+                result = self.request(COMPACT_OCCURRENCES, data, response, validate)
             except InvalidCompletion:
-                result = self.request(SPARSE + '\nRepair the batch: return every occurrence ID exactly once, with supported typed values.', data, response, validate)
+                result = self.request(COMPACT_OCCURRENCES + '\nRepair the batch: use only supported typed values and local evidence indices.', data, response, validate)
             sources = {oid: evidence for oid, _, evidence in entries}
-            return {item.occurrence_id: decode(item.observations, models, sources[item.occurrence_id]) for item in result.occurrences}
+            return {item.occurrence_id: decode_compact(item.fields, models, sources[item.occurrence_id]) for item in result.occurrences}
         except (InvalidCompletion, OutputTruncated, RequestTooLarge):
             if len(entries) > 1:
                 middle = len(entries)//2

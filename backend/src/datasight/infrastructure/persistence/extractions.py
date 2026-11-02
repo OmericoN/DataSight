@@ -187,6 +187,7 @@ class ExtractionRepositoryMixin:
             if row["status"] == "successful":
                 self.conn.commit()
                 return
+            result = result.model_copy(update={'prompt_version': row['config'].get('prompt_version', result.prompt_version)})
             evidence = {e.evidence_id: e for e in result.evidence}
             for dataset in result.datasets:
                 first = evidence[dataset.occurrences[0].evidence_ids[0]]

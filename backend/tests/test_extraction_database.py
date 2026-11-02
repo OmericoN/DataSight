@@ -79,13 +79,14 @@ def test_migration_atomic_publish_zero_result_and_run_isolation(database):
     repo.cursor.execute("INSERT INTO publications(paper_id,title,source,open_access_url) VALUES ('W-excluded','Excluded','test','https://example.test/other.pdf')")
     repo.conn.commit()
     assert [row['paperId'] for row in repo.get_papers_needing_download(pipeline_run_id=run1)] == ['W1']
-    first = repo.begin_publication_extraction(run1, publication, "first", {"schema_version": "v1"})
+    first = repo.begin_publication_extraction(run1, publication, "first", {"schema_version": "v1", 'prompt_version': 'test-strategy'})
     repo.attach_extraction_source(first["id"], "snapshot.md", "hash", None)
     repo.record_extraction_progress(first['id'], {'phase': 'locator', 'attempts_this_invocation': 1})
     repo.begin_extraction_request(first["id"], "scan1", {"messages": []})
     repo.record_extraction_attempt(first["id"], "scan1", {"elapsed_seconds": 0.1, "response": {"usage": {"total_tokens": 10}}})
     repo.finish_extraction_request(first["id"], "scan1", {"passages": []}, None)
     repo.publish_extraction(first["id"], result())
+    assert repo.extraction_detail(run1, first['id'])['result']['prompt_version'] == 'test-strategy'
     assert repo.extraction_detail(run1, first['id'])['metrics']['progress']['phase'] == 'locator'
     repo.publish_extraction(first["id"], result())
     assert len(repo.export_insight_rows(run1)) == 1

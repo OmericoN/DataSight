@@ -26,11 +26,11 @@ def extraction_configuration(legacy: bool | None = None) -> dict[str, Any]:
             raise ValueError('LLM_EXTRACTION_STRATEGY must be legacy or bounded')
         legacy = strategy == 'legacy'
     settings = {
-        "schema_version": SCHEMA_VERSION, "prompt_version": PROMPT_VERSION if legacy else 'indexed-sparse-v13',
+        "schema_version": SCHEMA_VERSION, "prompt_version": PROMPT_VERSION if legacy else 'indexed-sparse-v14',
         "llm_model": config.LLM_MODEL, "model_revision": config.LLM_MODEL_REVISION,
         "renderer_version": RENDERER_VERSION, "render_profile": "full_body",
         "chunk_characters": CHUNK_CHARACTERS if legacy else 6000, "overlap_characters": OVERLAP_CHARACTERS,
-        "feature_batching": "group_then_bisect_v1" if legacy else 'sparse_groups_occurrences8_v2',
+        "feature_batching": "group_then_bisect_v1" if legacy else 'sparse_groups_compact_occurrences8_v3',
         "context_tokens": CONTEXT_TOKENS, "max_prompt_characters": MAX_PROMPT_CHARS,
         "template_reserve_tokens": TEMPLATE_RESERVE,
         "temperature": 0, "max_tokens": MAX_TOKENS, "enable_thinking": False,
