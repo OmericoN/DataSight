@@ -5,10 +5,10 @@ import re
 import time
 from typing import Literal
 
-from pydantic import Field, TypeAdapter, create_model
+from pydantic import ConfigDict, Field, TypeAdapter, create_model
 
 from datasight.application.extraction_engine import (
-    Block, ExtractionEngine, FEATURES, INSTRUCTIONS,
+    Block, ExtractionEngine, INSTRUCTIONS,
     consolidate, evidence_for, merge_features, source_blocks, validate_feature_response,
 )
 from datasight.domain import extraction as c
@@ -22,10 +22,11 @@ GROUPS = {
 
 
 class SparseField(c.StrictModel):
-    field: str
-    state: Literal['reported', 'unclear', 'conflicting']
-    values_json: str
-    evidence_ids: list[str]
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    field: str = Field(alias='f')
+    state: Literal['reported', 'unclear', 'conflicting'] = Field(alias='s')
+    values_json: str = Field(alias='v')
+    evidence_ids: list[str] = Field(alias='e')
 
 
 class SparseFeatures(c.StrictModel):
@@ -84,10 +85,15 @@ def indexed_blocks(text):
         index = end-1 if end-index > 1 and end < len(boundaries)-1 else end
 
 
-SPARSE = FEATURES + """Return only fields with reported, unclear, or conflicting information.
-Omitted fields mean not_reported. field is one of the supplied group.field paths.
-values_json is a JSON array of values (not Observed wrappers). evidence_ids supports
-every value in that array. String facts must be JSON strings, year an integer.
+SPARSE = INSTRUCTIONS + """Extract only supported facts for the target dataset.
+Do not attach evidence about a different dataset. An association requires explicit
+names, identifiers, aliases or clear local context. Every factual string or number
+must occur literally in its cited evidence; never infer a license from public access.
+Return only fields with reported, unclear, or conflicting information.
+Omitted fields mean not_reported. Emit each field ONCE, then stop. Never repeat fields.
+Compact keys: f is a supplied group.field path, s is the state, v is a JSON array
+of values encoded as a string (not Observed wrappers), e lists evidence IDs supporting
+every value. String facts must be JSON strings, year an integer.
 Identifier values have scheme, literal, target; URLs have url, target; licenses have
 statement, name, url, scope. Use only the supplied allowed literal values.
 Identifier target: dataset, data_paper, research_article, repository, other, unknown.
@@ -255,13 +261,13 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 for group, fields in fixed.items():
                     output[group] = models[group].model_validate({**output[group].model_dump(), **fields.model_dump()})
             return output
-        except (InvalidCompletion, OutputTruncated, RequestTooLarge):
-            if not repair:
+        except (InvalidCompletion, OutputTruncated, RequestTooLarge) as exc:
+            if isinstance(exc, InvalidCompletion) and not repair:
                 return self.sparse(target, evidence, models, repair=True)
             if len(evidence) > 1:
                 middle = len(evidence)//2
-                left = self.sparse(target, evidence[:middle], models, repair=True)
-                right = self.sparse(target, evidence[middle:], models, repair=True)
+                left = self.sparse(target, evidence[:middle], models, repair=repair)
+                right = self.sparse(target, evidence[middle:], models, repair=repair)
                 return {key: merge_features(left[key], right[key]) for key in models}
             if sum(len(model.model_fields) for model in models.values()) > 1:
                 fields = [(group, name) for group, model in models.items() for name in model.model_fields]
@@ -270,7 +276,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
                     partial = {group: create_model(model.__name__ + '_subset', __base__=c.StrictModel,
                                **{name: (model.model_fields[name].annotation, Field(default_factory=model.model_fields[name].annotation)) for g, name in subset if g == group})
                                for group, model in models.items() if any(g == group for g, _ in subset)}
-                    outputs.append(self.sparse(target, evidence, partial, repair=True))
+                    outputs.append(self.sparse(target, evidence, partial, repair=repair))
                 return {group: model.model_validate({key: value for output in outputs if group in output
                                                      for key, value in output[group].model_dump().items()}) for group, model in models.items()}
             raise ValueError('Sparse feature cannot validate; extraction incomplete')

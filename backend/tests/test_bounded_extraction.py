@@ -168,3 +168,20 @@ def test_only_invalid_fields_are_repaired_and_valid_facts_are_reused():
     cached = Partial()
     assert BoundedExtractionEngine(repo, cached, 1, 'Alpha').sparse('Alpha', [evidence], {'identity': c.IdentityFeatures}) == result
     assert not cached.calls
+
+
+def test_truncation_splits_evidence_without_retrying_the_same_payload():
+    from datasight.infrastructure.llm.client import OutputTruncated
+    class Truncated(Client):
+        def complete(self, payload, model, record_attempt, validate):
+            data = json.loads(payload['messages'][1]['content'])
+            if len(data['evidence']) > 1:
+                self.calls.append('truncated')
+                raise OutputTruncated('output limit')
+            return super().complete(payload, model, record_attempt, validate)
+    evidence = [c.Evidence(evidence_id=f'e{i}', block_id='b', quote='Alpha', char_start=0, char_end=5,
+                          section_heading=None, standardized_section='other', placement='body') for i in range(2)]
+    client = Truncated()
+    BoundedExtractionEngine(MemoryRequests(), client, 1, 'Alpha').sparse('Alpha', evidence, {'identity': c.IdentityFeatures})
+    assert client.calls == ['truncated', SparseFeatures, SparseFeatures]
+    assert set(SparseFeatures.model_json_schema()['$defs']['SparseField']['properties']) == {'f', 's', 'v', 'e'}
