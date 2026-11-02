@@ -1,0 +1,4 @@
+source_run_key,source_request_id,occurrences,status,seconds,attempts,prompt_tokens,completion_tokens,raw_sha256,format,raw_path
+run-218b96f5-feb2-4752-84ff-20b99c5d4302,789,8,OutputTruncated,64.894,1,2876,2048,bc021c322f879e3e02c1ebdb136a796defa685125610ce8c01678eb4caa7c5f6,typed_dense_8,storage\evaluation\dense-occurrence-probe\raw.json
+run-218b96f5-feb2-4752-84ff-20b99c5d4302,789,4,OutputTruncated,64.889,1,2380,2048,6276891b5c61c759839e9b31c0f548f416416cb048ba7d0624aeb86fdc03f35f,typed_dense_4,storage\evaluation\dense-occurrence-probe4\raw.json
+run-218b96f5-feb2-4752-84ff-20b99c5d4302,789,8,validated,42.313,1,2830,1332,1528026b511d13234606a47e88cf75a6e22e3255a44ee354174d5a2b81ef1c1f,typed_local_indices_minified_8,storage\evaluation\dense-occurrence-probe8-indexed\raw.json

@@ -1,0 +1,17 @@
+{
+  "namespace": "ub-ub-datasight",
+  "utc": "2026-11-02T21:40:09.6929203Z",
+  "pod_uid": "187a2cd5-3c39-489c-a643-9e23654827a7",
+  "restarts": 0,
+  "run_key": "run-aea8a73b-6f01-4f0c-a024-027ebf697439",
+  "image_id": "image-registry.openshift-image-registry.svc:5000/ub-ub-datasight/datasight-vllm-gpu@sha256:696d375800974384d1663c64d20bb1dfef4006a61657c6a0afceb4156eb6c716",
+  "model_settings": {
+    "VLLM_MODEL": "Qwen/Qwen3.8-27B",
+    "VLLM_REVISION": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "VLLM_DTYPE": "bfloat16",
+    "SERVED_MODEL_NAME": "Qwen/Qwen3.8-27B"
+  },
+  "created_utc": "2026-11-02T13:10:23Z",
+  "ready": true,
+  "pod_name": "datasight-vllm-gpu-7796bbf6c7-pzz8b"
+}

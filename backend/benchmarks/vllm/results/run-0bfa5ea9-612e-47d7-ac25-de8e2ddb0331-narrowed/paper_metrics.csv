@@ -1,0 +1,3 @@
+run_id,run_key,paper_id,source_sha256,status,dataset_count,engine_seconds,locator_calls,shared_feature_calls,occurrence_calls,retry_attempts,repair_attempts,call_limit,time_limit_seconds,attempts,prompt_tokens,completion_tokens,total_tokens,inference_seconds,p95_request_seconds,missing_usage_attempts,error_categories
+3,run-0bfa5ea9-612e-47d7-ac25-de8e2ddb0331,W2890139949,0e6cc1b33e6219e8abc19a19eb1989fd059ecd7c5a7c38e21fb9a0cd0770d9b2,interrupted,0,393.49,79,21,,,,100,900,100,199210,11003,210213,391.068,21.492,0,invalid_completion;output_truncated;extraction_budget_exceeded
+3,run-0bfa5ea9-612e-47d7-ac25-de8e2ddb0331,W4281658583,,pending,0,,,,,,,,,0,0,0,0,0,,0,

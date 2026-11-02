@@ -1,5 +1,18 @@
 # DataSight GPU inference diagnosis and throughput study
 
+**Current scope:** PDF download failures and excessive whole-paper extraction work.
+The [narrowed implementation record](#narrowed-fix-record-2026-11-02) below supersedes
+the earlier tuning proposals. Jev, model replacement, concurrency sweeps and A100
+experiments are outside this change. Earlier observations remain historical evidence.
+
+**Latest outcome:** the PDF fallback, bounded recovery and compact occurrence
+format are implemented. The [final narrowed comparison](#final-narrowed-comparison-and-decision)
+completed **1/3 papers on the first invocation**. A second completed with one
+explicit resume; the review stopped at 100 calls. The whole-cohort completion
+target and accuracy gate are **not passed**, so bounded extraction remains opt-in.
+Final tested application revision: `7f62265923bba773865d4a26e66b520a0dc2e764`.
+GPU deployment returned to **0/0 replicas**; local API/workers are running.
+
 ## Status and provenance
 
 Diagnostic date: **2026-11-02**, Europe/Paris (UTC+01:00). Namespace:
@@ -343,3 +356,407 @@ preemptions and KV-cache pressure signal an unsafe capacity setting. The
 27B BF16 weights alone require roughly 54 GB decimal before runtime and KV
 cache, so a single 40 GB A100 would require a different precision or GPU
 topology; an 80 GB A100 still needs its own measured sweep.
+
+## Narrowed fix record: 2026-11-02
+
+### Implemented behavior and recorded source
+
+The application source was committed before the final replays at
+`06ec0dca7d6e70ff30bfaa317032d89ca301da6c` (`codex/vllm-diagnostic`).
+Earlier prototypes are diagnostic evidence, including those that completed quickly.
+Unrelated README, documentation and design-QA changes remain in the working tree;
+the extraction application files used by the final replay match the recorded commit.
+The manifest therefore honestly retains `dirty=true`; `execution.json` distinguishes
+stable committed application code from dirty prototype measurements. A source hash
+alone is not presented as a reproducible release.
+
+PDF acquisition now deduplicates the preferred URL, retained alternative PDF URLs,
+then known landing pages. A landing page is followed only through an explicit public
+PDF link or `citation_pdf_url`; at most five links are followed one level deep.
+Responses must have PDF magic, a bounded nonempty body and an EOF marker before
+atomic publication. This is an envelope/integrity check, not proof of publication
+identity or a complete PDF parser; GROBID conversion remains a separate check.
+Bibliography/HTML/truncated/oversized responses are not retried. Only temporary
+connection/timeout and configured retryable HTTP failures are retried, at most three
+attempts per URL. 401/403 and recognized access challenges become `access_blocked`;
+long `Retry-After` becomes `retry_deferred`. Nothing bypasses publisher controls.
+Attempts include failed alternative and explicit-link requests; cache reuse counts zero.
+
+The fixed original preflight cohort remains two papers (immutable key
+`run-9500c0fb-94e6-43e3-9eed-271fd844e075`): W2890139949 reuses its validated
+review PDF with zero new HTTP attempts; W4281658583 (LOTUS) remains inaccessible
+after three HTTP attempts: bibliography/invalid PDF, then HTML through a known
+landing location and its explicit link. Its final category is `html_body`.
+This particular failure is not evidence that authentication/security caused it.
+Neither paper was silently replaced. A cloned run without `preview_id` previously
+exposed an overly broad download query; the query now scopes to its selected
+candidate rows, verified against an unrelated publication in PostgreSQL.
+
+The opt-in `bounded` strategy (`indexed-sparse-v14`) selects numbered sentence/line
+units and reconstructs exact quotes/offsets from the immutable full-body source.
+It targets 6,000 source characters per batch, with units no longer than 1,000
+characters and last-unit overlap; section metadata is retained. The historical
+`overlap_characters=300` configuration field belongs to the legacy splitter;
+bounded overlap follows source-unit boundaries, not a fixed 300-character slice.
+Oversized requests split before inference. Full coverage and exact indices must
+validate. Anchored duplicates are removed before shared-feature work.
+
+Shared features run once per provisional exact name/identifier group. Unnamed
+references and conflicting identifiers remain separate. Evidence is restricted to
+that group's occurrences, explicitly matching support and linked bibliography;
+unattached support remains inspectable. Shared internal observations use compact
+`f/s/v/e` keys. Occurrence fields use fixed numeric keys, typed values, short
+uncertainty states and local evidence indices; these hydrate the same public fields.
+Response schemas constrain
+the requested field paths and cap observation counts, including one-field repairs.
+Local use/citation work is batched for up to eight occurrence IDs; missing, duplicate
+or unknown IDs fail validation. Bibliography-only occurrences stay distinguishable.
+
+Only invalid fields receive one repair; validated facts and request checkpoints
+are retained. Truncation immediately splits evidence rather than requesting the
+same oversized output again; fields split only after evidence cannot split further.
+Invalid work that still cannot validate fails explicitly. No partial publication
+becomes a successful extraction. Model, BF16 and serving limits were unchanged.
+
+Both the guarded legacy strategy and bounded strategy enforce budgets before
+each HTTP attempt, including retries/repairs: 50 attempts/300 engine seconds for
+ordinary papers, 100/900 for sources over 60,000 characters or more than 30 locator
+reference occurrences. Budgets restart only on an explicit resume; validated cached
+work requires no new inference. Budget exhaustion saves checkpoints and returns
+`interrupted` / `extraction_budget_exceeded`.
+Socket timeouts and retry waits are limited by the remaining engine budget; replay
+wall time includes source verification and persistence, and excludes export after
+extraction returns. Frozen-source runs exclude PDF download and conversion.
+Preparation scripts now print separate download, conversion and rendering seconds
+for future acquisitions; the original retained cohort's preparation timings were
+not recorded and cannot be reconstructed from these inference measurements.
+API/workspace progress
+shows phase counts, attempts and time budget without changing existing routes.
+
+### Frozen regression inputs and method
+
+| Paper ID | Source characters | Immutable full-body SHA-256 | Evidence check |
+|---|---:|---|---|
+| W2890139949 | 143,417 | `0e6cc1b33e6219e8abc19a19eb1989fd059ecd7c5a7c38e21fb9a0cd0770d9b2` | Original long review, arXiv 1809.07294 |
+| W3159332717 | 44,557 | `fffde07c535989aa4c5acb6a4762a1ae172f0f8c08d0d283918e373091a7da0b` | Retained PDF; Dataset 1/2/3 labels |
+| W4308573601 | 43,834 | `443280854dcea329a5ea013c1761863b6529e7493031c2b6ebc64c90097609f0` | PDF body/tables explicitly use Lung3 and Radiogenomics |
+
+The two smaller sources were prepared once with GROBID into source-only run
+`run-bf6ca9ab-957e-4be1-92dd-59ec1b1ce612` (local numeric ID 4).
+Every replay creates a new immutable run key and copies the selected cohort and
+source snapshots; it does not rerender a different source version mid-comparison.
+`regression_sources.csv` records the retained PDF, TEI and source paths and SHA-256
+checksums, including the actual PDF versions used for these evidence checks.
+Only one inference replay runs at a time. H100 sampling observed one running
+request, zero waiting, zero preemptions, 100% instantaneous GPU utilization and
+74,017/81,559 MiB used. These are sparse samples, not an average utilization or
+an A100 measurement. Low KV-cache use plus serial calls explains underused serving
+capacity, but the dominant observed application problems were repeated per-reference
+feature work, overfragmented locator batches and invalid/truncated recovery work.
+
+PDF inspection and output-difference inspection were AI-assisted. The known labels
+are regression sentinels, not an exhaustively reverified occurrence/field gold set.
+The earlier automated label/quote matching did not establish such a set. Do not
+interpret finding two known names as 100% recall or a schema pass as field precision.
+
+### Diagnostic experiments and rejection decisions
+
+Every row below refers to the exact run key; the denominator is the number of
+selected papers in that run, including inaccessible/unstarted papers. HTTP attempts
+are the count of exported attempt rows, including repairs/retries. Wall seconds
+come from replay start/finish UTC; a dash means no defensible contiguous wall span.
+These are diagnostics, not accepted performance configurations.
+
+| Run key (local ID) | Selected papers | HTTP attempts | Wall seconds | Result / reason not accepted |
+|---|---:|---:|---:|---|
+| `run-9500c0fb-94e6-43e3-9eed-271fd844e075` (1) | 2 | 268 | — | Original legacy review stopped without a result; LOTUS download unavailable |
+| `run-8052635a-10d1-44f9-a290-7782cbaf3ee4` (2) | 2 | 21 | 33.851 | Locator name failed grounding; LOTUS source preparation failed |
+| `run-0bfa5ea9-612e-47d7-ac25-de8e2ddb0331` (3) | 2 | 100 | 393.529 | Attempt budget contained work; no completed review; other paper unstarted in this early prototype |
+| `run-bde2d5f2-77de-4a8b-99b3-e39119f4c5b9` (5) | 1 | 79 | — | Superseded prototype stopped deliberately; checkpoints retained |
+| `run-d7210d60-0cc0-4024-a76f-c25488a09fcf` (6) | 1 | 24 | 77.377 | Structural completion rejected: word-index naming errors and empty shared fields |
+| `run-201b5b6e-3913-4d23-9d52-95e031a9b646` (7) | 1 | 50 | 305.571 | Same rejected word-index strategy; not an accuracy pass |
+| `run-7b239918-8310-4833-a7f6-54a5b901470a` (8) | 1 | 13 | 35.762 | Structural completion rejected: missed known Lung3/Radiogenomics body references |
+| `run-e7bda4f5-12f4-41e2-a231-facaf8e083a3` (9) | 1 | 56 | 901.031 | Time budget interrupted repeated feature recovery; no partial output published |
+| `run-e7cd00fe-174c-4be9-8ab7-1690a1196adc` (10) | 1 | 3 | 3.127 | DSRI DNS/network outage, no inference tokens; session recovered without a new login |
+| `run-457db5b1-91a7-493d-9ef2-25bb0f8b0246` (11) | 1 | 32 | — | Superseded after repeated output-limit failures; operator stop |
+| `run-f1b4f8e6-05ee-494a-8626-0f67456f1197` (12) | 1 | 29 | 231.951 | Explicit failure: model invented field paths; valid checkpoints retained |
+| `run-61232d94-cf60-4c62-86c1-b231be68ec9f` (13) | 1 | 29 | 223.883 | Explicit failure: a narrow repair regenerated other fields; narrowed response schemas added |
+| `run-95f2e621-c5f7-446f-971d-ffe665f5178f` (14) | 1 | 42 | — | Operator stop after occurrence responses included unrequested identity fields; occurrence schemas narrowed too |
+| `run-218b96f5-feb2-4752-84ff-20b99c5d4302` (15) | 1 | 54 | 898.130 | Committed v13 candidate interrupted by time budget, only 16 occurrences completed; not adopted |
+| `run-480dc0bf-c843-4779-b820-11dfd2f71ff4` (16) | 1 | 14 | — | Operator stop after v13 failed its completion gate; saved-batch protocol testing replaced further comparisons |
+
+Run 15 used recorded commit `34bc4d6530c2da955cd30b30c9b755fe79ce903d`, with
+stable execution hashes. Its output-format cost still failed the gate: 27,655
+recorded completion tokens, 54 attempts, no successful publication. This is a
+failed benchmark, not an accepted throughput improvement. Run 16 used that same
+application revision and was deliberately stopped; no contiguous wall comparison
+is reported for it.
+
+The saved first occurrence request from run 15 (request 789) was then tested alone,
+with the same eight occurrences and evidence. The denominator is one request;
+all three probes use the fixed Qwen/H100 configuration. Original dense typed fields
+still truncated at 2,048 output tokens (8 occurrences: 64.894 s; 4: 64.889 s).
+Fixed short field keys, local numeric evidence indices and minified output validated
+all **8/8** supplied IDs plus existing field/evidence checks in one call: **42.313 s,
+2,830 prompt tokens, 1,332 completion tokens**. The compact public projection was
+not weakened. These are request-level diagnostic results, not whole-paper accuracy.
+Raw probe records stay ignored under `storage/evaluation/dense-occurrence-probe*/`.
+Their `summary.json` files record raw checksums; the validated probe raw SHA-256 is
+`1528026b511d13234606a47e88cf75a6e22e3255a44ee354174d5a2b81ef1c1f`.
+This led to the v14 occurrence format in the recorded final application revision.
+Atomic publication also now copies the actual prompt version from the frozen run
+configuration, instead of leaving the result model's legacy default.
+
+The final recorded replays and adoption decision are below.
+
+### Replicating this narrowed study
+
+Use the booking/login/GPU readiness and smoke procedure above. Treat the earlier
+concurrency/server-tuning examples as historical proposals, not steps in this fix.
+Do not change vLLM arguments. Never put an `oc` login token in Git, metadata, a
+transcript or exported results. Existing `oc whoami` should be checked before asking
+for a new token. The posted replacement token was not needed or used by this study.
+
+From the repository root, with the existing database and frozen preview available:
+
+```powershell
+$revision = '7f62265923bba773865d4a26e66b520a0dc2e764'
+git show --no-patch --format=fuller $revision
+git diff $revision -- backend/src backend/migrations compose.yaml frontend/src
+docker compose up -d postgres redis grobid api worker
+docker compose run --rm migrate
+# Download only: substitute the new preview ID; keep its selected cohort fixed.
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/download_preflight.py --preview-id <preview-id> --processing-limit 2
+# Or validate a cohort already materialized in the database (ID 1 here).
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/download_preflight.py --run-id 1
+# Reserve/start GPU time only after usable PDFs are known; verify the real gateway.
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/smoke.py
+# One replay at a time, same immutable source, new run key for each strategy.
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/replay.py --source-run-id 4 --paper-id W4308573601 --code-revision $revision
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/replay.py --source-run-id 4 --paper-id W3159332717 --code-revision $revision
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/replay.py --source-run-id 1 --paper-id W2890139949 --code-revision $revision
+# Add --legacy to a new replay to measure the guarded original strategy.
+```
+
+Database IDs above are local examples, not portable identities. After a reset,
+recover the exported run keys/cohort and seed the source-only cohort with the
+retained PDFs; `prepare_replay.py --pdf <absolute-pdf-path>` can be repeated for
+each PDF and uses the existing converter. Its resulting source hashes must match
+the frozen source table before a comparison is treated as the same experiment.
+Keep the original review in its own source cohort. Existing historical intermediate
+prompt versions remain historical; do not resume them under newer semantics.
+
+The commands above use the final corrected application revision for a **new**
+comparison. The reported GPU matrix used 06ec0dc before the two recovery/retention
+corrections; reproducing that exact experiment requires that earlier clean checkout
+and its frozen artifacts/database. Do not label a run on the later revision as an
+execution of 06ec0dc.
+
+`replay.py` exports automatically under `storage/evaluation/<full-run-key>/` with
+UTC timings, execution hashes, configuration and `code_changed_during_run` in
+`replay.json`. For a manual run, export using its verified numeric ID:
+
+```powershell
+docker compose run --rm --no-deps llm-worker uv run datasight evaluation-export --run-id <id> --output-dir storage/evaluation/<full-run-key>
+python backend/benchmarks/vllm/summarize.py --export-dir storage/evaluation/<full-run-key> --output-dir backend/benchmarks/vllm/results/<full-run-key>-comparison --metadata storage/evaluation/<full-run-key>/metadata.json
+```
+
+Metadata requires `run_id`, **`run_key`**, `mode`, GPU, image digest, model/revision,
+vLLM version, code revision, dirty flag and allowed serving settings; benchmark
+mode also requires `started_utc`/`finished_utc`. Copy actual timings/configuration
+from `replay.json`, not from a previous run. New result directories must not exist;
+their names must contain the full run key. Manifests include source hashes,
+whitelisted per-paper extraction configuration, raw export locations/checksums,
+and sanitized CSV checksums. Preserve initial execution hashes separately from
+the summarizer's current-file hashes when recording old dirty diagnostics.
+
+For an explicit same-configuration resume, use the existing resume endpoint or
+`datasight resume-extractions --run-id <id> --local`. Progress per invocation is
+distinct from cumulative exported attempts. Never reset a budget invisibly with
+automatic redispatch. To stop a local replay, stop its exact one-off container,
+then use `mark_interrupted.py` after its exclusive lock is available, as above.
+
+Collect sanitized metric/GPU samples during each replay and record sampling UTC
+and run key. Raw samples live under ignored
+`storage/evaluation/narrowed-runtime-20261102/`. Export before scale-down; verify
+no active replay, no running/waiting model requests and no queued extraction work,
+then return `datasight-vllm-gpu` to zero replicas. Keep an active GPU booking for
+any later resume; a zero-replica gateway cannot perform extraction.
+
+### Calculations, tests and limits
+
+For each selected paper, `paper_metrics.csv` reports status, zero/nonzero result,
+all HTTP attempt rows, tokens, sum of attempt durations, nearest-rank request p95,
+engine seconds and phase counts. Phase call counts partition HTTP attempts;
+retry/repair counters overlap these phase counts and must not be added again.
+For each run, wall seconds = finish UTC minus start UTC, and successful papers/hour
+= `3600 * successful_papers / wall_seconds`; failed/interrupted papers remain in
+the selected denominator. Missing server usage is counted explicitly, not treated
+as verified zero token use. A failed paper can have many retained successful
+checkpoints but always has zero published partial datasets.
+
+The benchmark application passed **228 unit/API tests, four opt-in PostgreSQL tests
+skipped by the ordinary invocation**. An isolated PostgreSQL test additionally
+passed for selected-cohort download scoping, progress persistence, atomic publication,
+zero-result export and run isolation. The previously recorded frontend build and
+two ExtractionPanel tests passed. Regression tests exercise indexed coverage/offsets,
+repeated/unnamed/conflicting identities, evidence association, bad indices/quotations,
+truncation, targeted repairs, checkpoint reuse, outage/retry/deadline/attempt limits,
+invalid/alternative/access-blocked PDFs, totals and credential exclusion.
+
+Successful stage completion is not an accuracy conclusion. Reference precision/recall,
+field precision, association/grouping errors and unsupported-claim rates require
+matched PDF annotations and adjudication. Budget interruption proves containment,
+not successful extraction. The candidate remains opt-in until the actual regression
+completion and verified no-decrease gates pass. Legacy remains the default, with
+the same safety budgets. Publisher access failures can remain unresolved.
+
+## Final narrowed comparison and decision
+
+The three sequential first invocations used committed application revision
+`06ec0dca7d6e70ff30bfaa317032d89ca301da6c`, Qwen revision and H100/image/settings
+recorded above. All four execution-file hashes remained unchanged during each run.
+Each row has **one selected paper**. Every paper reached an explicit terminal
+outcome; no selected paper is stuck or absent from these exports. Both shorter
+papers exceeded 30 locator occurrences and therefore qualified as long under
+the agreed rule. The ordinary **300 s / 50-call** gate was not exercised by this
+cohort and is not claimed to pass.
+
+| Run key (local ID), paper | Selected | First-invocation outcome | HTTP attempts | Engine seconds | Replay wall seconds | Located work items / published occurrences |
+|---|---:|---|---:|---:|---:|---:|
+| `run-aea8a73b-6f01-4f0c-a024-027ebf697439` (17), W4308573601 | 1 | Successful | 45 | 474.893 | 474.965 | 44 / 44 |
+| `run-8a456a3d-77d7-4093-818e-cc88f1454eb5` (18), W3159332717 | 1 | Time budget interrupted; 96/102 work items checkpointed | 63 | 898.283 | 898.269 | 102 / 0 |
+| `run-645fcfb2-3add-493f-9843-f7bffc12ea03` (19), W2890139949 | 1 | Call budget interrupted | 100 | 366.729 | 366.765 | 142 / 0 |
+
+`final_comparison.csv` contains these rows plus phase calls, retries/repairs,
+request p95, tokens, missing usage and error categories. For runs 17/18/19,
+request p95 was respectively **42.571 / 49.158 / 8.059 seconds** (nearest-rank
+over every exported attempt). Recorded completion tokens were **14,752 / 27,324 /
+8,573**; missing usage was **0 / 2 / 0 attempts**. Missing usage is not proof of
+zero server work. Run 17's 45 calls partition into 10 locator, 29 shared-feature
+and 6 occurrence calls; its 10 repairs are already included in those counts.
+
+Across the three first invocations: **208 attempts**, **1 successful / 3 selected
+papers**, **2 interrupted**, **0 failed**, **0 omitted/nonterminal**. Cohort wall
+time is **1,740.385 s**, from run 17's start UTC to run 19's finish UTC, including
+the exports between sequential runs. Successful-paper throughput is
+`3600 * 1 / 1740.385 = 2.069 papers/hour`. This describes the tested cohort,
+not a general H100 capacity estimate. No additional guarded-legacy performance
+replays were run after the candidate failed the completion gate; earlier legacy
+and prototype results remain diagnostic comparisons, not a matched accuracy baseline.
+
+The occurrence-format change has a directly matched subtest. The normalized
+eight-occurrence input/evidence SHA-256 is identical in both runs:
+`b436b1a42916665c7045652ccb3426f2a41cc725c80f9972071748b1da7a86e9`.
+
+| Run key (local ID) | Same occurrence denominator | HTTP attempts including recovery | Sum of request seconds | Completion tokens |
+|---|---:|---:|---:|---:|
+| `run-218b96f5-feb2-4752-84ff-20b99c5d4302` (15), v13 | 8 | 5 | 233.642 | 7,257 |
+| `run-aea8a73b-6f01-4f0c-a024-027ebf697439` (17), v14 | 8 | 1 | 42.571 | 1,327 |
+
+`first_occurrence_batch_comparison.csv` records the exact work keys. Regenerate
+these sums by selecting those keys from each run's sanitized `request_attempts.csv`
+and summing attempt duration/tokens; subdivided/repair requests are included.
+This verifies less recovery for that batch, not an overall accuracy or speedup claim.
+
+### Explicit resume and field-retention check
+
+After preserving run 18's original immutable benchmark export, an explicit resume
+at revision `67790a72b8531c2777648abd025f5b3516f3be8a` completed the last six work
+items in **29.075 s with one new HTTP attempt**. It reused **61 validated request
+checkpoints** and repeated **zero** validated requests. Cumulative attempts became
+64. `resume_check.csv` records invocation UTC and counts; the raw resumed export
+is separate at ignored
+`storage/evaluation/run-8a456a3d-77d7-4093-818e-cc88f1454eb5-resume-check/`.
+The original benchmark result remains interrupted. Summing engine intervals
+exceeds 15 minutes; this resume is recovery evidence, not a pass of that gate.
+
+The resumed output contains 31 groups and 101 published occurrences: consolidation
+coalesced one duplicate anchor among the 102 processed work items. A review of that
+path found that duplicate-anchor consolidation could discard the second occurrence's
+local features. Revision `7f62265923bba773865d4a26e66b520a0dc2e764` now merges use,
+citation and citation-link observations when an anchor is coalesced. A read-only
+rebuild from the real cached requests used **zero new HTTP calls**, retained all
+790 previous local values and restored **two** additional validated values, with
+the same 31 groups/101 anchors. Historical published results were not overwritten.
+`cached_consolidation_check.json` records this check.
+
+Recheck retained facts with the current report checkout, the same frozen configuration,
+and the actual run key. This command refuses cache misses and cannot issue inference
+or overwrite the original publication:
+
+```powershell
+docker compose run --rm --no-deps llm-worker uv run python benchmarks/vllm/audit_cached_result.py --run-id 18 --run-key run-8a456a3d-77d7-4093-818e-cc88f1454eb5
+```
+
+The final recovery correction also stops retrying a read timeout when the read
+timeout was shortened by the publication deadline. The preceding run had spent an
+extra attempt near that deadline. Its regression test verifies one attempted call
+and immediate resumable budget interruption. Upstream cancellation after client
+disconnect was not independently verified; do not assume a timed-out server request
+uses zero GPU time. Both post-benchmark corrections are covered by tests; the full
+GPU matrix above remains explicitly attributed to revision 06ec0dc.
+
+Final application checks: **230 passed, 4 opt-in PostgreSQL tests skipped** in the
+ordinary suite. The isolated PostgreSQL publication/export/progress test passed
+separately. The frontend build and two ExtractionPanel tests passed earlier and
+the frontend files were unchanged by the final backend corrections. The final
+proxied health request reported database, Redis, worker and GROBID ready. Both
+Celery workers had no active work and the LLM queue was empty; the old queued
+extraction respected its interrupted status and generated no inference. vLLM
+showed zero running/waiting requests and zero preemptions before scale-down;
+OpenShift then reported `datasight-vllm-gpu` **0/0**, with zero available replicas.
+
+Copyable checks (the PostgreSQL DSN must already identify an isolated database
+with `test` in its name; it is deliberately not included in this report):
+
+```powershell
+docker compose run --rm --no-deps llm-worker uv run python -m pytest -q
+docker compose run --rm --no-deps -e DATASIGHT_TEST_POSTGRES_URI llm-worker uv run python -m pytest -q tests/test_extraction_database.py::test_migration_atomic_publish_zero_result_and_run_isolation
+npm --prefix frontend run build
+npm --prefix frontend test -- src/features/runs/ExtractionPanel.test.tsx
+```
+
+### Acceptance and remaining work
+
+**Do not adopt the candidate as the default.** The completion gate passed for
+one of three initial invocations. The review's 126 provisional groups make the
+current one-shared-request-per-group approach incapable of completing within
+100 calls: 126 shared calls alone exceed the cap, before locator/occurrence work.
+Locator input overhead also forced subdivision: the review needed 55 locator
+calls despite the nominal 6,000-character target. Those are demonstrated remaining
+causes, not GPU OOM or pod-restart failures.
+
+Further work would need to batch shared observations for several independently
+keyed groups, reuse one request for shared/local work where evidence permits, and
+compact repeated locator metadata while preserving all units. These changes were
+**not implemented or accepted in this iteration**. The review remains resumably
+incomplete. No broad worker redesign, model replacement, Jev filter, concurrency
+sweep or A100 experiment was added.
+
+The two known base datasets in run 17 are present as used by the current paper;
+the resumed run contains Dataset 1/2/3 as well. Source-offset checks passed for all
+45/106 retained evidence passages in those two completed exports. These checks
+do not adjudicate all 19/31 output groups, derived labels, field associations or
+unsupported-claim risk. Exhaustive PDF reference/field labels are unavailable for
+this matched cohort. Reference recall/precision, factual-field precision, grouping
+and association error rates therefore remain **unmeasured**, and no accuracy
+no-decrease claim is made. Known names and literal grounding are necessary checks,
+not substitutes for that comparison.
+
+The final source, original terminal outcomes, resumed snapshot and sanitized tables
+are kept separately. `verification_manifest.json` records the benchmark/final code
+revisions, the failed gates, checksums of supplementary tables and locations/checksums
+of ignored raw records. `runtime_snapshot.json`, `gpu_samples.csv`,
+`protocol_probes.csv`, `regression_sources.csv` and the per-run manifests retain
+the hardware, protocol, PDF/TEI/source and execution provenance. None contains
+credentials, prompts, raw completions or paper passages. Publisher failures remain
+explicit: the original review PDF is usable, while LOTUS still has no validated
+public PDF from its retained locations.
+
+Generated CSV/JSON bytes are preserved by the scoped `.gitattributes` rules so
+Git cannot change their checksums through platform newline conversion. **82 staged
+artifact hashes** and every referenced raw export checksum were verified before
+the records commit; credential-pattern checks found no token values in the
+versioned benchmark directory. The report itself is versioned by Git alongside
+the immutable per-run manifests.

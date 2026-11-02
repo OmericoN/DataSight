@@ -1,0 +1,8 @@
+{
+  "deployment": "datasight-vllm-gpu",
+  "available_replicas": 0,
+  "ready_replicas": 0,
+  "utc": "2026-11-02T22:27:49.3179337Z",
+  "namespace": "ub-ub-datasight",
+  "desired_replicas": 0
+}

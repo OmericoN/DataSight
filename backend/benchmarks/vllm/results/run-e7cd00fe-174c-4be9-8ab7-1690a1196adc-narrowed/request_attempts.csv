@@ -1,0 +1,4 @@
+run_key,paper_id,extraction_id,work_key,request_status,attempt_number,http_status,elapsed_seconds,prompt_tokens,completion_tokens,total_tokens,error_category
+run-e7cd00fe-174c-4be9-8ab7-1690a1196adc,W4308573601,19,264847bf2208867693ebba4d78e137f36a7403d18fee75a97ed2cdf4d8d8d86a,failed,1,,0.02250474000175018,,,,connection_or_timeout
+run-e7cd00fe-174c-4be9-8ab7-1690a1196adc,W4308573601,19,264847bf2208867693ebba4d78e137f36a7403d18fee75a97ed2cdf4d8d8d86a,failed,2,,0.011043318001611624,,,,connection_or_timeout
+run-e7cd00fe-174c-4be9-8ab7-1690a1196adc,W4308573601,19,264847bf2208867693ebba4d78e137f36a7403d18fee75a97ed2cdf4d8d8d86a,failed,3,,0.013865220000297995,,,,connection_or_timeout

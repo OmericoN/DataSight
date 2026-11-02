@@ -1,0 +1,2 @@
+run_id,run_key,mode,selected_papers,successful_papers,zero_result_papers,failed_papers,interrupted_papers,other_papers,attempts,prompt_tokens,completion_tokens,total_tokens,missing_usage_attempts,inference_seconds,wall_seconds,successful_papers_per_hour
+11,run-457db5b1-91a7-493d-9ef2-25bb0f8b0246,diagnostic,1,0,0,0,1,0,32,57724,12173,69897,0,391.263,,
