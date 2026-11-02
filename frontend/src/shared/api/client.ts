@@ -83,6 +83,44 @@ export type CsvDownload = {
   filename: string;
 };
 
+export type Observation = {
+  state: "reported" | "not_reported" | "unclear" | "conflicting";
+  values: { value: unknown; evidence_ids: string[] }[];
+};
+
+export type ExtractionEvidence = {
+  evidence_id: string; quote: string; section_heading: string | null;
+  char_start: number; char_end: number; placement: string;
+};
+
+export type ExtractedDataset = {
+  dataset_local_id: string; display_name: string; review_reasons: string[];
+  identity: Record<string, Observation>; use: Record<string, Observation>;
+  findability: Record<string, Observation>; accessibility: Record<string, Observation>;
+  interoperability: Record<string, Observation>; reusability: Record<string, Observation>;
+  occurrences: { occurrence_id: string; evidence_ids: string[]; bibliography_only: boolean;
+    use: Record<string, Observation>; citation: Record<string, Observation>;
+    citation_links: { marker: string; status: string; raw_reference: string | null }[] }[];
+};
+
+export type ExtractionSummary = {
+  progress?: ExtractionProgress | null; error_category?: string | null;
+  id: number | null; paper_id: string; title: string; status: string;
+  error: string | null; dataset_count: number;
+};
+
+export type ExtractionDetail = {
+  progress?: ExtractionProgress | null; error_category?: string | null;
+  id: number; status: string; source_sha256: string | null; error: string | null;
+  config: Record<string, unknown>; coverage: Record<string, number>; metrics: Record<string, unknown>;
+  result: { datasets: ExtractedDataset[]; evidence: ExtractionEvidence[]; unresolved_mentions: string[] } | null;
+  requests: { work_key: string; status: string; attempt_count: number; error: string | null }[];
+};
+
+export type ExtractionProgress = { phase: string; attempts_this_invocation: number;
+  call_limit: number; time_limit_seconds: number; elapsed_seconds: number;
+  completed: Record<string, number>; calls_by_phase: Record<string, number> };
+
 export type DiscoveryPhaseId = "direct" | "exact" | "related" | "focused" | "random" | "manual";
 
 export type UMProfilePhase = {
@@ -323,6 +361,13 @@ async function requestBlob(path: string): Promise<CsvDownload> {
 }
 
 export const api = {
+  llmStatus: () => request<{ configured: boolean; available: boolean; model: string; message: string }>("/api/v1/llm/status"),
+  extractions: (runId: number, offset = 0, limit = 25) =>
+    request<{ items: ExtractionSummary[]; total: number; offset: number; limit: number }>(`/api/v1/runs/${runId}/extractions?offset=${offset}&limit=${limit}`),
+  extraction: (runId: number, extractionId: number) =>
+    request<ExtractionDetail>(`/api/v1/runs/${runId}/extractions/${extractionId}`),
+  resumeExtractions: (runId: number) =>
+    request<RunCreateResponse>(`/api/v1/runs/${runId}/extractions/resume`, { method: "POST" }),
   health: () => request<HealthResponse>("/api/v1/health"),
   stages: async () => {
     const response = await request<{ stages: StageInfo[] }>("/api/v1/stages");

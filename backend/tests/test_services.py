@@ -100,3 +100,41 @@ def test_rule_feature_extraction_populates_matchable_metadata():
     assert mention.dataset_role == DatasetRole.USED
     assert mention.reference_directness == ReferenceDirectness.DIRECT
     assert mention.provenance.prompt_version == "rules-v3"
+
+
+def test_evaluation_bundle_preserves_extraction_outcomes_and_source_evidence(tmp_path, monkeypatch):
+    from datasight.application.pipeline_services import export_evaluation_bundle
+    from datasight.domain.extraction import DatasetEntry, Evidence, Occurrence, PublicationExtraction
+
+    result = PublicationExtraction(paper_id="W1", source_sha256="hash", evidence=[Evidence(
+        evidence_id="e1", block_id="b1", quote="Alpha", char_start=0, char_end=5,
+        section_heading=None, standardized_section="other", placement="body")],
+        datasets=[DatasetEntry(dataset_local_id="d1", display_name="=unsafe-formula", occurrences=[Occurrence(
+            occurrence_id="o1", evidence_ids=["e1"], bibliography_only=False)])],
+        coverage={"source_characters": 5, "covered_characters": 5})
+    class Repo:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get_pipeline_run(self, run_id): return {"id": run_id}
+        def evaluation_paper_rows(self, run_id): return []
+        def evaluation_candidate_rows(self, run_id): return []
+        def evaluation_extraction_rows(self, run_id):
+            return [{"paper_id": "W1", "extraction_id": 1, "status": "successful", "result": result.model_dump(mode="json")},
+                    {"paper_id": "W2", "status": "failed", "error": "GPU off", "result": None}]
+        def evaluation_request_attempt_rows(self, run_id):
+            return [{"paper_id": "W1", "extraction_id": 1, "work_key": "hash", "request_status": "successful",
+                     "attempt_number": 1, "http_status": 200, "elapsed_seconds": 1.2,
+                     "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12,
+                     "error_category": None}]
+    monkeypatch.setattr("datasight.application.pipeline_services.PipelineRepository", Repo)
+    export_evaluation_bundle(1, str(tmp_path))
+    assert json.loads((tmp_path / "extractions.json").read_text())[1]["status"] == "failed"
+    with (tmp_path / "extractions.csv").open(newline="", encoding="utf-8") as handle:
+        assert [row["dataset_count"] for row in csv.DictReader(handle)] == ["1", "0"]
+    with (tmp_path / "datasets.csv").open(newline="", encoding="utf-8") as handle:
+        assert next(csv.DictReader(handle))["display_name"] == "'=unsafe-formula"
+    with (tmp_path / "field_observations.csv").open(newline="", encoding="utf-8") as handle:
+        assert next(csv.DictReader(handle))["state"] == "not_reported"
+    assert (tmp_path / "occurrences.csv").exists()
+    attempts = (tmp_path / "request_attempts.csv").read_text(encoding="utf-8")
+    assert "hash" in attempts and "GPU off" not in attempts

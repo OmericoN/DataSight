@@ -39,12 +39,15 @@ class InsightRepositoryMixin:
                         WHERE artifact.publication_id = p.id AND artifact.artifact_type = 'markdown'
                     )
                 ) AS document_rendered,
+                COALESCE(extraction.status, CASE WHEN dm.id IS NOT NULL THEN 'legacy' ELSE 'pending' END) AS extraction_status,
                 dm.dataset_name,
                 dm.dataset_role,
                 dm.reference_directness,
                 dm.confidence,
                 dm.evidence,
                 dm.metadata,
+                dm.provenance,
+                dm.metadata->'features' AS features,
                 md.status AS match_status,
                 md.match_method,
                 md.match_score,
@@ -73,7 +76,15 @@ class InsightRepositoryMixin:
                 WHERE pi.pipeline_run_id = dc.pipeline_run_id
                   AND pi.publication_id = p.id
             ) item_progress ON TRUE
-            LEFT JOIN dataset_mentions dm ON dm.publication_id = p.id
+            LEFT JOIN LATERAL (
+                SELECT id,status FROM publication_extractions
+                WHERE pipeline_run_id=dc.pipeline_run_id AND publication_id=p.id
+                ORDER BY id DESC LIMIT 1
+            ) extraction ON TRUE
+            LEFT JOIN dataset_mentions dm ON dm.publication_id = p.id AND (
+                (dm.extraction_id=extraction.id AND extraction.status='successful') OR
+                (dm.extraction_id IS NULL AND extraction.id IS NULL AND NOT pr.config ? 'extraction')
+            )
             LEFT JOIN um_match_decisions md ON md.dataset_mention_id = dm.id
             LEFT JOIN um_datasets ud ON ud.id = md.um_dataset_row_id
             WHERE dc.pipeline_run_id = %s
@@ -87,44 +98,7 @@ class InsightRepositoryMixin:
 
     def export_insight_rows(self, pipeline_run_id: int | None = None) -> list[dict[str, Any]]:
         if pipeline_run_id is not None:
-            self.cursor.execute(
-                """
-                SELECT
-                    p.paper_id,
-                    p.title AS publication_title,
-                    p.year AS publication_year,
-                    COALESCE(pr.config->>'discovery_mode', 'unrecorded') AS discovery_mode,
-                    COALESCE(dc.evidence_reasons, ARRAY[]::TEXT[]) AS discovery_methods,
-                    dm.dataset_name,
-                    dm.dataset_role,
-                    dm.reference_directness,
-                    dm.confidence,
-                    dm.evidence,
-                    dm.metadata,
-                    md.status AS match_status,
-                    md.match_method,
-                    md.match_score,
-                    md.matched_fields,
-                    md.candidate_um_dataset_ids,
-                    md.review_required,
-                    ud.um_dataset_id,
-                    ud.title AS um_dataset_title,
-                    ud.repository AS um_repository
-                FROM dataset_mentions dm
-                JOIN publications p ON p.id = dm.publication_id
-                JOIN discovery_candidates dc
-                  ON dc.publication_id = p.id
-                 AND dc.pipeline_run_id = %s
-                 AND dc.included
-                 AND dc.pipeline_ready
-                JOIN pipeline_runs pr ON pr.id = dc.pipeline_run_id
-                LEFT JOIN um_match_decisions md ON md.dataset_mention_id = dm.id
-                LEFT JOIN um_datasets ud ON ud.id = md.um_dataset_row_id
-                ORDER BY p.paper_id, dm.dataset_name
-                """,
-                (pipeline_run_id,),
-            )
-            return [dict(row) for row in self.cursor.fetchall()]
+            return [row for row in self.export_run_result_rows(pipeline_run_id) if row.get("dataset_name")]
 
         self.cursor.execute(
             """
@@ -134,12 +108,15 @@ class InsightRepositoryMixin:
                 p.year AS publication_year,
                 COALESCE(discovery.discovery_mode, 'unrecorded') AS discovery_mode,
                 COALESCE(discovery.discovery_methods, ARRAY[]::TEXT[]) AS discovery_methods,
+                CASE WHEN dm.extraction_id IS NULL THEN 'legacy' ELSE 'successful' END AS extraction_status,
                 dm.dataset_name,
                 dm.dataset_role,
                 dm.reference_directness,
                 dm.confidence,
                 dm.evidence,
                 dm.metadata,
+                dm.provenance,
+                dm.metadata->'features' AS features,
                 md.status AS match_status,
                 md.match_method,
                 md.match_score,
@@ -171,6 +148,12 @@ class InsightRepositoryMixin:
             ) discovery ON TRUE
             LEFT JOIN um_match_decisions md ON md.dataset_mention_id = dm.id
             LEFT JOIN um_datasets ud ON ud.id = md.um_dataset_row_id
+            WHERE (dm.extraction_id IS NULL AND NOT EXISTS (
+                SELECT 1 FROM publication_extractions e WHERE e.publication_id=p.id
+            )) OR dm.extraction_id=(
+                SELECT e.id FROM publication_extractions e WHERE e.publication_id=p.id
+                ORDER BY e.id DESC LIMIT 1
+            )
             ORDER BY p.paper_id, dm.dataset_name
             """,
             (None, None),

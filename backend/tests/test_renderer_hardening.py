@@ -53,10 +53,10 @@ def test_full_body_traverses_top_level_content_tables_lists_and_sections(tmp_pat
     assert "Appendix" in markdown
 
 
-def test_default_profile_prunes_low_yield_sections(tmp_path: Path):
+def test_explicit_pruned_profile_prunes_low_yield_sections(tmp_path: Path):
     xml = tmp_path / "paper.tei.xml"
     xml.write_text(_tei(), encoding="utf-8")
-    markdown = extract_markdown(xml)
+    markdown = extract_markdown(xml, profile="pruned")
     assert "Methods" in markdown
     assert "Data Availability" in markdown
     assert "Discussion" not in markdown
@@ -74,8 +74,8 @@ def test_render_records_lineage_metrics_and_reuses_only_matching_cache(tmp_path:
     second = render_to_markdown(xml, output, "W1")
 
     assert first.success and first.sha256 and first.source_sha256
-    assert first.profile == "pruned"
-    assert first.warnings == ["Pruned profile omits sections and is not canonical for evaluation"]
+    assert first.profile == "full_body"
+    assert first.warnings == []
     assert first.quality_metrics
     assert first.quality_metrics["figures"] == 2
     assert first.quality_metrics["tables"] == 1
@@ -140,3 +140,18 @@ def test_citations_footnotes_abstract_formula_and_batch_failures_are_preserved(t
     )
     assert results[0].success
     assert not results[1].success
+
+
+def test_full_body_preserves_back_matter_uncited_references_and_stable_citation_ids(tmp_path):
+    xml = tmp_path / "full.xml"
+    xml.write_text('''<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>
+      <p>We used Alpha <ref type="bibr" target="#b1">[1]</ref>.</p>
+      </body><back><div><head>Appendix</head><p>Appendix data.</p></div>
+      <note>Back matter note.</note><listBibl>
+      <biblStruct xml:id="b1"><analytic><title>Alpha data</title></analytic></biblStruct>
+      <bibl xml:id="b2">Uncited Beta dataset, Version 2.</bibl>
+      </listBibl></back></text></TEI>''', encoding="utf-8")
+    text = extract_markdown(xml)
+    assert "[1]{#b1}" in text and "[[1]]" not in text
+    assert "Appendix data" in text and "Back matter note" in text
+    assert "{#b2}" in text and "Uncited Beta dataset, Version 2" in text

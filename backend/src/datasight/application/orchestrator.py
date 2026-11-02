@@ -233,6 +233,8 @@ def _run_config(
     preview: dict[str, Any],
     render_profile: RenderProfile,
 ) -> dict[str, Any]:
+    from datasight.application.llm_extraction import extraction_configuration
+
     request = dict(preview.get("request") or {})
     return {
         "preview_id": preview_id,
@@ -256,6 +258,7 @@ def _run_config(
         "renderer_version": RENDERER_VERSION,
         "render_profile": render_profile,
         "detector_version": DETECTOR_VERSION,
+        "extraction": extraction_configuration(),
         "processing_limit": processing_limit,
         "excluded_candidate_ids": excluded_candidate_ids or [],
         "output": output,
@@ -276,6 +279,8 @@ def _fail_run(pipeline_run_id: int, error: str) -> None:
 
 
 def _run_outcome(results: list[dict[str, Any]]) -> str:
+    if any(result.get("status") == "interrupted" for result in results):
+        return "interrupted"
     return (
         "completed_with_errors"
         if any(result.get("status") in {"failed", "completed_with_errors"} for result in results)

@@ -53,6 +53,8 @@ def create_run(request: RunCreateRequest) -> RunCreateResponse:
 
 @router.post("/stages/{stage}/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_stage_run(stage: PipelineStage, request: StageRunCreateRequest) -> RunCreateResponse:
+    if stage == PipelineStage.EXTRACT_FEATURES:
+        raise HTTPException(status_code=422, detail="Extraction requires a selected publication set; use POST /runs/{run_id}/extractions/resume.")
     task = task_for_stage(stage, tasks)
     options = StageRunOptions(
         query=request.query,

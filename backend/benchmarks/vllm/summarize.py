@@ -11,7 +11,7 @@ from datetime import datetime
 from math import ceil
 from pathlib import Path
 
-ATTEMPT_COLUMNS = ["paper_id", "extraction_id", "work_key", "request_status", "attempt_number",
+ATTEMPT_COLUMNS = ["run_key", "paper_id", "extraction_id", "work_key", "request_status", "attempt_number",
                    "http_status", "elapsed_seconds", "prompt_tokens", "completion_tokens",
                    "total_tokens", "error_category"]
 SERVING_SETTINGS = {"max_num_seqs", "max_model_len", "max_num_batched_tokens",
@@ -20,6 +20,7 @@ SERVING_SETTINGS = {"max_num_seqs", "max_model_len", "max_num_batched_tokens",
 CODE_FILES = (
     "compose.yaml",
     "backend/src/datasight/application/extraction_engine.py",
+    "backend/src/datasight/application/bounded_extraction.py",
     "backend/src/datasight/application/high_throughput.py",
     "backend/src/datasight/application/llm_extraction.py",
     "backend/src/datasight/application/pipeline_services.py",
@@ -71,6 +72,11 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
     extractions = read_csv(export_dir / "extractions.csv")
     attempts = read_csv(export_dir / "request_attempts.csv")
     run_id = str(metadata["run_id"])
+    run_key = str(metadata.get('run_key') or '')
+    if metadata['mode'] == 'benchmark' and not run_key:
+        raise ValueError('Benchmark requires immutable run_key')
+    if run_key and run_key not in output_dir.name:
+        raise ValueError('Result directory must contain the immutable run_key')
     if not papers or any(row["run_id"] != run_id for row in papers):
         raise ValueError("Paper export does not match the selected run")
     paper_ids = [row["paper_id"] for row in papers]
@@ -91,6 +97,8 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
         request_rows = by_paper[paper_id]
         status = extraction.get("status") or "not_started"
         metrics = json.loads(extraction.get("metrics") or "{}")
+        progress = metrics.get('progress') or {}
+        phases = progress.get('calls_by_phase') or {}
         if metrics and status in {"successful", "failed", "interrupted"} and int(metrics.get("attempts", 0)) != len(request_rows):
             raise ValueError(f"Attempt count mismatch for {paper_id}")
         errors = sorted({row["error_category"] for row in request_rows if row["error_category"]})
@@ -98,9 +106,17 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
             errors.append("source_preparation_or_upstream")
         durations = sorted(number(row["elapsed_seconds"]) for row in request_rows)
         paper_rows.append({
-            "run_id": run_id, "paper_id": paper_id,
+            "run_id": run_id, 'run_key': run_key, "paper_id": paper_id,
             "source_sha256": extraction.get("source_sha256", ""), "status": status,
             "dataset_count": int(number(extraction.get("dataset_count"))),
+            'engine_seconds': progress.get('elapsed_seconds', ''),
+            'locator_calls': phases.get('locator', ''),
+            'shared_feature_calls': phases.get('shared_features', ''),
+            'occurrence_calls': phases.get('occurrences', ''),
+            'retry_attempts': progress.get('retry_attempts', ''),
+            'repair_attempts': progress.get('repair_attempts', ''),
+            'call_limit': progress.get('call_limit', ''),
+            'time_limit_seconds': progress.get('time_limit_seconds', ''),
             "attempts": len(request_rows),
             "prompt_tokens": sum(int(number(row["prompt_tokens"])) for row in request_rows),
             "completion_tokens": sum(int(number(row["completion_tokens"])) for row in request_rows),
@@ -113,7 +129,7 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
     totals = {key: sum(int(row[key]) for row in paper_rows) for key in
               ("attempts", "prompt_tokens", "completion_tokens", "total_tokens", "missing_usage_attempts")}
     run_row = {
-        "run_id": run_id, "mode": metadata["mode"], "selected_papers": len(paper_rows),
+        "run_id": run_id, 'run_key': run_key, "mode": metadata["mode"], "selected_papers": len(paper_rows),
         "successful_papers": sum(row["status"] == "successful" for row in paper_rows),
         "zero_result_papers": sum(row["status"] == "successful" and row["dataset_count"] == 0 for row in paper_rows),
         "failed_papers": sum(row["status"] == "failed" for row in paper_rows),
@@ -126,8 +142,9 @@ def summarize(export_dir: Path, output_dir: Path, metadata: dict[str, object]) -
     output_dir.mkdir(parents=True)
     write_csv(output_dir / "paper_metrics.csv", paper_rows, list(paper_rows[0]))
     write_csv(output_dir / "run_metrics.csv", [run_row], list(run_row))
-    write_csv(output_dir / "request_attempts.csv", attempts, ATTEMPT_COLUMNS)
+    write_csv(output_dir / "request_attempts.csv", [{'run_key': run_key, **row} for row in attempts], ATTEMPT_COLUMNS)
     manifest = {key: metadata[key] for key in required}
+    manifest['run_key'] = run_key
     root = Path(__file__).resolve().parents[3]
     manifest.update({"started_utc": started, "finished_utc": finished,
                      "source_hashes": {row["paper_id"]: row["source_sha256"] for row in paper_rows},

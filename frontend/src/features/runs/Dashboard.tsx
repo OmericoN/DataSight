@@ -153,6 +153,7 @@ import {
 } from "./pipeline";
 
 const DiscoveryLaunchPage = lazy(() => import("@/features/discovery/DiscoveryLaunchPage"));
+const ExtractionPanel = lazy(() => import("./ExtractionPanel").then(module => ({ default: module.ExtractionPanel })));
 const UMDatasetsPage = lazy(() => import("@/features/datasets/UMDatasetsPage"));
 
 const RESET_CONFIRMATION = "RESET DATASIGHT";
@@ -726,7 +727,7 @@ function RunResultsPage() {
             </div>
             <CardTitle className="truncate text-base">{run?.query || `Run ${numericRunId}`} results</CardTitle>
             <CardDescription className="text-xs">
-              Selected papers and their extracted insights; empty insight fields mean no mention was detected.
+              Selected papers and their extracted insights; extraction outcomes distinguish missing evidence from unfinished or failed processing.
             </CardDescription>
           </div>
           {run ? <StatusBadge status={run.status} /> : null}
@@ -762,6 +763,7 @@ function RunResultsPage() {
           </Tabs>
         </CardContent>
       </Card>
+      {run ? <Suspense fallback={<p role="status" className="p-4 text-sm">Loading extraction outcomes…</p>}><ExtractionPanel key={run.id} run={run} /></Suspense> : null}
       <RunResultsDownloadSheet
         open={downloadOpen}
         kind={downloadKind}

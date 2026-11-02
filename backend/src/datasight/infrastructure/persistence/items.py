@@ -162,8 +162,9 @@ class PipelineItemRepositoryMixin:
                 JOIN pipeline_items pi ON pi.id = pis.pipeline_item_id
                 WHERE pi.pipeline_run_id = %s
                   AND pis.stage = %s
-                  AND pis.status = 'queued'
-                ORDER BY pis.id
+                  AND (pis.status = 'queued' OR
+                       (%s = 'extract_features' AND pis.status = 'running' AND pis.task_id = %s))
+                ORDER BY CASE WHEN pis.status = 'running' THEN 0 ELSE 1 END, pis.id
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
             )
@@ -177,7 +178,7 @@ class PipelineItemRepositoryMixin:
             WHERE pis.id = selected.id
             RETURNING pis.pipeline_item_id
             """,
-            (pipeline_run_id, stage_value, limit, task_id),
+            (pipeline_run_id, stage_value, stage_value, task_id, limit, task_id),
         )
         item_ids = [int(row["pipeline_item_id"]) for row in self.cursor.fetchall()]
         if item_ids:
@@ -216,7 +217,9 @@ class PipelineItemRepositoryMixin:
             """,
             (status, psycopg2.extras.Json(metrics or {}), error, item_id, stage_value),
         )
-        if status != "successful":
+        if status == "interrupted":
+            self.cursor.execute("UPDATE pipeline_items SET status='interrupted',updated_at=now() WHERE id=%s", (item_id,))
+        elif status != "successful":
             self._skip_downstream_item_stages(item_id, stage_value)
             self.cursor.execute(
                 "UPDATE pipeline_items SET status = 'failed', updated_at = now() WHERE id = %s",
@@ -243,7 +246,7 @@ class PipelineItemRepositoryMixin:
         self.refresh_stage_aggregate_for_item(item_id, stage_value)
         if status == "successful" and (next_stage := self._next_stage(stage_value)):
             self.refresh_stage_aggregate_for_item(item_id, next_stage.value)
-        if status != "successful":
+        if status not in {"successful", "interrupted"}:
             for downstream in self._downstream_stages(stage_value):
                 self.refresh_stage_aggregate_for_item(item_id, downstream.value)
 
@@ -282,6 +285,7 @@ class PipelineItemRepositoryMixin:
             """
             SELECT
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
                 COUNT(*) FILTER (WHERE pis.status = 'skipped') AS skipped
             FROM pipeline_item_stages pis
             JOIN pipeline_items pi ON pi.id = pis.pipeline_item_id
@@ -346,6 +350,7 @@ class PipelineItemRepositoryMixin:
                 COUNT(*) AS total,
                 COUNT(*) FILTER (WHERE pis.status = 'successful') AS successful,
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
                 COUNT(*) FILTER (WHERE pis.status = 'skipped') AS skipped,
                 COUNT(*) FILTER (WHERE pis.status = 'queued') AS queued,
                 COUNT(*) FILTER (WHERE pis.status IN ('running', 'started')) AS running,
@@ -363,13 +368,16 @@ class PipelineItemRepositoryMixin:
 
         successful = int(counts.get("successful") or 0)
         failed = int(counts.get("failed") or 0)
+        interrupted = int(counts.get("interrupted") or 0)
         skipped = int(counts.get("skipped") or 0)
         queued = int(counts.get("queued") or 0)
         running = int(counts.get("running") or 0)
         pending = int(counts.get("pending") or 0)
         terminal = successful + failed + skipped
 
-        if running:
+        if interrupted:
+            status = "interrupted"
+        elif running:
             status = "running"
         elif queued:
             status = "queued"

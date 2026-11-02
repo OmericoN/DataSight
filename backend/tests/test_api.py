@@ -149,7 +149,7 @@ def test_create_run_enqueues_preview_backed_pipeline(monkeypatch):
         assert kwargs["excluded_candidate_ids"] == ["W901"]
         assert kwargs["um_datasets_path"] == "data/um_dataset"
         assert kwargs["strategy"] == "standard"
-        assert kwargs["render_profile"] == "pruned"
+        assert kwargs["render_profile"] == "full_body"
         return {"pipeline_run_id": 7, "task_id": "task-1", "status": "queued"}
 
     monkeypatch.setattr("datasight.interfaces.api.routes.runs.orchestrator.enqueue_run_all", fake_enqueue_run_all)

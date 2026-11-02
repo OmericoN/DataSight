@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from datasight.infrastructure.ingestion.downloader import PDFDownloader
+from datasight.infrastructure.ingestion.downloader import PDFDownloader, pdf_locations
 
 
 VALID_PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
@@ -114,3 +114,54 @@ def test_corrupt_cache_is_replaced(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     result = PDFDownloader(tmp_path, max_retries=1).download_paper("W6", "https://example.test/file")
     assert result.success
     assert cached.read_bytes() == VALID_PDF
+
+
+def test_alternative_pdf_after_bibliography_is_not_retried(tmp_path, monkeypatch):
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(b'@article{citation}', content_type='text/plain') if url.endswith('.bib') else FakeResponse()
+    monkeypatch.setattr(requests, 'get', get)
+    result = PDFDownloader(tmp_path).download_paper('W1', 'https://example.test/a.bib',
+               alternative_urls=['https://example.test/a.bib', 'https://example.test/a.pdf'])
+    assert result.success
+    assert calls == ['https://example.test/a.bib', 'https://example.test/a.pdf']
+
+
+def test_access_block_is_explicit_and_not_retried(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(requests, 'get', lambda *args, **kwargs: (calls.append(1) or FakeResponse(status_code=403)))
+    result = PDFDownloader(tmp_path).download_paper('W1', 'https://example.test/a')
+    assert result.failure_category == 'access_blocked' and len(calls) == 1
+
+
+def test_landing_uses_explicit_pdf_link(tmp_path, monkeypatch):
+    def get(url, **kwargs):
+        return FakeResponse() if url.endswith('.pdf') else FakeResponse(b'<html><meta name="citation_pdf_url" content="/a.pdf"></html>')
+    monkeypatch.setattr(requests, 'get', get)
+    assert PDFDownloader(tmp_path).download_paper('W1', 'https://example.test/page').success
+
+
+def test_long_retry_after_is_deferred(tmp_path, monkeypatch):
+    response = FakeResponse(status_code=429)
+    response.headers['Retry-After'] = '120'
+    monkeypatch.setattr(requests, 'get', lambda *args, **kwargs: response)
+    monkeypatch.setattr('time.sleep', lambda seconds: pytest.fail('Must not wait'))
+    result = PDFDownloader(tmp_path).download_paper('W1', 'https://example.test/a.pdf')
+    assert result.failure_category == 'retry_deferred'
+    assert result.quality_metrics['attempts'] == 1
+
+
+def test_access_challenge_does_not_follow_links(tmp_path, monkeypatch):
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(b'<html>Verify you are human<a href="/a.pdf">PDF</a></html>')
+    monkeypatch.setattr(requests, 'get', get)
+    result = PDFDownloader(tmp_path).download_paper('W1', 'https://example.test/a')
+    assert result.failure_category == 'access_blocked' and len(calls) == 1
+
+
+def test_locations_keep_preferred_then_pdf_then_landing_order():
+    assert pdf_locations('https://x/a.pdf', {'best_oa_location': {'pdf_url': 'https://x/a.pdf', 'landing_page_url': 'https://x/page'},
+                         'locations': [{'pdf_url': 'https://x/b.pdf'}]}) == ['https://x/a.pdf','https://x/b.pdf','https://x/page']

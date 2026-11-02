@@ -6,11 +6,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from datasight.config import EXPORTS_DIR, LOGS_DIR, MARKDOWN_DIR, PDF_DIR, STORAGE_DIR, XML_DIR
+from datasight.config import EXTRACTIONS_DIR, EXPORTS_DIR, LOGS_DIR, MARKDOWN_DIR, PDF_DIR, STORAGE_DIR, XML_DIR
 from datasight.infrastructure.persistence.repository import PipelineRepository
 
 RESET_CONFIRMATION = "RESET DATASIGHT"
-GENERATED_DIRECTORIES: tuple[Path, ...] = (PDF_DIR, XML_DIR, MARKDOWN_DIR, EXPORTS_DIR, LOGS_DIR)
+GENERATED_DIRECTORIES: tuple[Path, ...] = (PDF_DIR, XML_DIR, MARKDOWN_DIR, EXPORTS_DIR, LOGS_DIR, EXTRACTIONS_DIR)
 
 
 class ResetBlockedError(RuntimeError):

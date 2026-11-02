@@ -20,7 +20,7 @@ STAGE_QUEUES: dict[PipelineStage, str] = {
     PipelineStage.GROBID_CONVERT: "grobid",
     PipelineStage.RENDER_DOCUMENT: "processing",
     PipelineStage.DETECT_MENTIONS: "processing",
-    PipelineStage.EXTRACT_FEATURES: "processing",
+    PipelineStage.EXTRACT_FEATURES: "llm",
 }
 
 
@@ -79,6 +79,8 @@ def build_dispatch_plan(
     max_batches: int = HIGH_THROUGHPUT_MAX_BATCHES_PER_DISPATCH,
 ) -> DispatchPlan:
     with PipelineRepository() as repo:
+        run = repo.get_pipeline_run(pipeline_run_id)
+        interrupted = bool(run and run["status"] == "interrupted")
         if repo.all_item_stages_terminal(pipeline_run_id):
             status = repo.finalize_high_throughput_run_if_ready(pipeline_run_id)
             return DispatchPlan(batches=(), final_status=status)
@@ -89,13 +91,16 @@ def build_dispatch_plan(
     safe_batch_size = max(1, batch_size)
     safe_max_batches = max(1, max_batches)
     for stage in ITEM_STAGES:
+        if interrupted and stage == PipelineStage.EXTRACT_FEATURES:
+            continue
         queued = queued_counts.get(stage.value, 0)
         if queued <= 0:
             continue
-        batch_count = min(safe_max_batches, ceil(queued / safe_batch_size))
+        stage_batch_size = 1 if stage == PipelineStage.EXTRACT_FEATURES else safe_batch_size
+        batch_count = min(safe_max_batches, ceil(queued / stage_batch_size))
         batches.extend(
             StageBatch(
-                stage=stage, queue=STAGE_QUEUES[stage], batch_size=safe_batch_size
+                stage=stage, queue=STAGE_QUEUES[stage], batch_size=stage_batch_size
             )
             for _ in range(batch_count)
         )
@@ -114,7 +119,7 @@ def process_high_throughput_stage(
         item_ids = repo.claim_queued_item_stages(
             pipeline_run_id=pipeline_run_id,
             stage=stage_value,
-            limit=max(1, batch_size),
+            limit=1 if stage_value == PipelineStage.EXTRACT_FEATURES else max(1, batch_size),
             task_id=task_id,
         )
 
@@ -124,6 +129,8 @@ def process_high_throughput_stage(
             results.append(
                 _process_claimed_item_stage(item_id, stage_value, overwrite, task_id)
             )
+            if results[-1]["status"] == "interrupted":
+                break
         except (
             Exception
         ) as exc:  # pragma: no cover - defensive boundary around per-item work

@@ -361,13 +361,13 @@ def test_selected_discovery_candidates_filter_before_count_and_pagination():
 
 def test_insight_rows_resolve_run_specific_discovery_provenance_without_duplicates():
     repo, cursor, _ = make_repo()
-    cursor.fetchall_results = [[{"paper_id": "W123", "discovery_mode": "random"}]]
+    cursor.fetchall_results = [[{"paper_id": "W123", "discovery_mode": "random", "dataset_name": "Alpha"}]]
 
     rows = repo.export_insight_rows(pipeline_run_id=9)
 
     query, params = cursor.executed[-1]
     assert rows[0]["discovery_mode"] == "random"
-    assert "JOIN discovery_candidates dc" in query
+    assert "FROM discovery_candidates dc" in query
     assert "COALESCE(dc.evidence_reasons" in query
     assert "dc.included" in query
     assert "dc.pipeline_ready" in query
@@ -436,7 +436,7 @@ def test_active_run_count_reads_running_statuses():
 
     assert repo.active_run_count() == 2
     query, _ = cursor.executed[-1]
-    assert "status IN ('queued', 'running', 'started')" in query
+    assert "status IN ('queued', 'running', 'started', 'interrupted')" in query
 
 
 def test_create_pipeline_run_records_creation_event():
@@ -535,7 +535,7 @@ def test_claim_queued_item_stages_uses_skip_locked():
     claim_query, claim_params = cursor.executed[0]
     assert "FOR UPDATE SKIP LOCKED" in claim_query
     assert "pis.status = 'queued'" in claim_query
-    assert claim_params == (9, "download_pdf", 2, "task-1")
+    assert claim_params == (9, "download_pdf", "download_pdf", "task-1", 2, "task-1")
 
 
 def test_high_throughput_outcome_reports_partial_errors():
@@ -566,6 +566,7 @@ def test_high_throughput_finalization_is_idempotent():
         {"status": "running"},
         {"count": 0},
         {"failed": 0, "skipped": 0},
+        {"status": "successful"},
         {"locked": True},
         {"status": "successful"},
     ]
@@ -595,7 +596,7 @@ def test_standard_run_outcome_reports_partial_errors():
     assert repo.standard_run_outcome(9) == "completed_with_errors"
     query, params = cursor.executed[-1]
     assert "stage = ANY(%s)" in query
-    assert "status IN ('failed', 'completed_with_errors')" in query
+    assert "status IN ('failed', 'completed_with_errors', 'interrupted')" in query
     assert params[0] == 9
     assert params[1][-1] == "extract_features"
 

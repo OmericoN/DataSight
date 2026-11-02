@@ -22,7 +22,9 @@ def scope_to_preview_candidates(
             NOT EXISTS (
                 SELECT 1 FROM pipeline_runs pr
                 WHERE pr.id = %s
-                  AND NULLIF(pr.config->>'preview_id', '') IS NOT NULL
+                  AND (NULLIF(pr.config->>'preview_id', '') IS NOT NULL OR EXISTS (
+                      SELECT 1 FROM discovery_candidates selected WHERE selected.pipeline_run_id=pr.id
+                  ))
             )
             OR EXISTS (
                 SELECT 1 FROM discovery_candidates dc

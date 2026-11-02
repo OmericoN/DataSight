@@ -17,7 +17,7 @@ from datasight.domain.discovery import (
     parse_terms,
 )
 from datasight.application.discovery_preview import materialize_discovery_preview
-from datasight.application.insights import INSIGHT_COLUMNS, serialize_insights_csv
+from datasight.application.insights import INSIGHT_COLUMNS, _csv_cell, serialize_insights_csv
 from datasight.infrastructure.ingestion.converter import GrobidConverter
 from datasight.infrastructure.ingestion.downloader import PDFDownloader
 from datasight.infrastructure.ingestion.openalex_exports import (
@@ -287,23 +287,9 @@ def extract_features_from_candidates(
     limit: int | None = None,
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
-    with PipelineRepository() as repo:
-        rows = repo.get_unprocessed_candidates(limit=limit, pipeline_run_id=pipeline_run_id)
-        mentions: list[DatasetMention] = []
-        candidate_ids: list[int] = []
-        for candidate in rows:
-            mentions.append(_mention_from_candidate(candidate))
-            candidate_ids.append(candidate["candidate_id"])
-        inserted = repo.persist_dataset_mentions(mentions, candidate_ids)
-        result = _stage_result(
-            PipelineStage.EXTRACT_FEATURES,
-            "successful" if inserted else "skipped",
-            inserted,
-            f"Promoted {inserted} candidates into v1 mention records.",
-            {"mentions": inserted},
-        )
-        repo.record_stage_result(PipelineStage.EXTRACT_FEATURES, result["status"], result, pipeline_run_id)
-        return result
+    from datasight.application.llm_extraction import extract_run
+
+    return extract_run(pipeline_run_id, limit)
 
 
 def import_um_datasets(path: str) -> dict[str, Any]:
@@ -389,11 +375,15 @@ def download_pipeline_item(
         if not context:
             return _missing_item_result(repo, item_id, PipelineStage.DOWNLOAD_PDF)
         downloader = PDFDownloader(output_dir=PDF_DIR, delay=0)
+        from datasight.infrastructure.ingestion.downloader import pdf_locations
+        repo.cursor.execute('SELECT raw FROM publications WHERE paper_id=%s', (context['paper_id'],))
+        raw = (repo.cursor.fetchone() or {}).get('raw') or {}
         result = downloader.download_paper(
             paper_id=context["paper_id"],
             url=context.get("open_access_url"),
             title=context.get("title"),
             overwrite=overwrite,
+            alternative_urls=pdf_locations(context.get('open_access_url'), raw),
         )
         repo.persist_download_results([result])
         status = "successful" if result.success else "failed"
@@ -557,22 +547,14 @@ def extract_features_pipeline_item(
         context = repo.get_pipeline_item_context(item_id)
         if not context:
             return _missing_item_result(repo, item_id, PipelineStage.EXTRACT_FEATURES)
-        rows = repo.get_unprocessed_candidates_for_publication(context["publication_row_id"])
-        mentions: list[DatasetMention] = []
-        candidate_ids: list[int] = []
-        for candidate in rows:
-            mentions.append(_mention_from_candidate(candidate))
-            candidate_ids.append(candidate["candidate_id"])
-        inserted = repo.persist_dataset_mentions(mentions, candidate_ids)
-        metrics = {"mentions": inserted, "paper_id": context["paper_id"]}
-        repo.finish_item_stage(item_id, PipelineStage.EXTRACT_FEATURES, "successful", metrics)
-        return _item_result(
-            PipelineStage.EXTRACT_FEATURES,
-            "successful",
-            item_id,
-            f"Promoted {inserted} candidates into v1 mention records.",
-            metrics,
-        )
+    from datasight.application.llm_extraction import extract_run
+
+    result = extract_run(context["pipeline_run_id"], publication_id=context["publication_row_id"])
+    with PipelineRepository() as repo:
+        status = result["status"]
+        item_status = "successful" if status == "successful" else "interrupted" if status == "interrupted" else "failed"
+        repo.finish_item_stage(item_id, PipelineStage.EXTRACT_FEATURES, item_status, result)
+    return {**result, "item_id": item_id}
 
 
 def match_um_dataset_pipeline_item(
@@ -674,6 +656,8 @@ def export_evaluation_bundle(pipeline_run_id: int, output_dir: str) -> dict[str,
             raise ValueError(f"Pipeline run {pipeline_run_id} does not exist")
         papers = repo.evaluation_paper_rows(pipeline_run_id)
         candidates = repo.evaluation_candidate_rows(pipeline_run_id)
+        extractions = repo.evaluation_extraction_rows(pipeline_run_id)
+        request_attempts = repo.evaluation_request_attempt_rows(pipeline_run_id)
 
     destination = _project_path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -681,6 +665,30 @@ def export_evaluation_bundle(pipeline_run_id: int, output_dir: str) -> dict[str,
     candidates_path = destination / "candidates.csv"
     _write_dict_rows(papers_path, papers, EVALUATION_PAPER_COLUMNS)
     _write_dict_rows(candidates_path, candidates, EVALUATION_CANDIDATE_COLUMNS)
+    extraction_columns = ["paper_id", "extraction_id", "status", "dataset_count", "source_sha256", "source_path", "fingerprint", "config", "coverage", "metrics", "error"]
+    _write_dict_rows(destination / "extractions.csv", [
+        {**row, "dataset_count": len((row.get("result") or {}).get("datasets", []))} for row in extractions
+    ], extraction_columns)
+    _write_dict_rows(destination / "request_attempts.csv", request_attempts, [
+        "paper_id", "extraction_id", "work_key", "request_status", "attempt_number",
+        "http_status", "elapsed_seconds", "prompt_tokens", "completion_tokens",
+        "total_tokens", "error_category",
+    ])
+    datasets, occurrences, observations = [], [], []
+    for extraction in extractions:
+        for dataset in (extraction.get("result") or {}).get("datasets", []):
+            identity = {"paper_id": extraction["paper_id"], "extraction_id": extraction["extraction_id"], "dataset_local_id": dataset["dataset_local_id"]}
+            datasets.append({**identity, "display_name": dataset["display_name"], "features": dataset})
+            for occurrence in dataset["occurrences"]:
+                occurrences.append({**identity, **occurrence})
+            for group in ("identity", "use", "findability", "accessibility", "interoperability", "reusability"):
+                for field, observed in dataset[group].items():
+                    observations.append({**identity, "field": f"{group}.{field}", **observed})
+    identity_columns = ["paper_id", "extraction_id", "dataset_local_id"]
+    _write_dict_rows(destination / "datasets.csv", datasets, [*identity_columns, "display_name", "features"])
+    _write_dict_rows(destination / "occurrences.csv", occurrences, [*identity_columns, "occurrence_id", "evidence_ids", "use", "citation", "citation_links", "bibliography_only"])
+    _write_dict_rows(destination / "field_observations.csv", observations, [*identity_columns, "field", "state", "values"])
+    (destination / "extractions.json").write_text(json.dumps(_json_safe(extractions), ensure_ascii=False, indent=2), encoding="utf-8")
     return {
         "status": "successful",
         "run_id": pipeline_run_id,
@@ -689,6 +697,8 @@ def export_evaluation_bundle(pipeline_run_id: int, output_dir: str) -> dict[str,
         "detector_version": DETECTOR_VERSION,
         "papers_path": str(papers_path),
         "candidates_path": str(candidates_path),
+        "extractions_path": str(destination / "extractions.json"),
+        "request_attempts_path": str(destination / "request_attempts.csv"),
     }
 
 
@@ -697,15 +707,7 @@ def _write_dict_rows(path: Path, rows: list[dict[str, Any]], columns: list[str])
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow({column: _csv_value(row.get(column)) for column in columns})
-
-
-def _csv_value(value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple)):
-        return json.dumps(_json_safe(value), ensure_ascii=False, sort_keys=True)
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return value
+            writer.writerow({column: _csv_cell(row.get(column)) for column in columns})
 
 
 def load_um_dataset_records(path: str) -> list[UMDatasetRecord]:

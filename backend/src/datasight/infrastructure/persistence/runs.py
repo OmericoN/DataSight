@@ -118,9 +118,10 @@ class RunRepositoryMixin:
         if pipeline_run_id is None:
             return
         self.cursor.execute(
-            "UPDATE pipeline_runs SET status = %s, finished_at = now(), updated_at = now() WHERE id = %s",
+            "UPDATE pipeline_runs SET status = CASE WHEN status='interrupted' THEN status ELSE %s END, finished_at = now(), updated_at = now() WHERE id = %s RETURNING status",
             (status, pipeline_run_id),
         )
+        status = str((self.cursor.fetchone() or {}).get("status") or status)
         self._insert_pipeline_run_event(
             pipeline_run_id=pipeline_run_id,
             stage=None,
@@ -133,15 +134,18 @@ class RunRepositoryMixin:
     def standard_run_outcome(self, pipeline_run_id: int) -> str:
         self.cursor.execute(
             """
-            SELECT COUNT(*) AS count
+            SELECT COUNT(*) FILTER (WHERE status IN ('failed','completed_with_errors')) AS count,
+                   COUNT(*) FILTER (WHERE status='interrupted') AS interrupted
             FROM stage_runs
             WHERE pipeline_run_id = %s
               AND stage = ANY(%s)
-              AND status IN ('failed', 'completed_with_errors')
+              AND status IN ('failed', 'completed_with_errors', 'interrupted')
             """,
             (pipeline_run_id, [stage.value for stage in WORKFLOW_STAGE_ORDER]),
         )
         row = self.cursor.fetchone() or {}
+        if int(row.get("interrupted") or 0):
+            return "interrupted"
         return "completed_with_errors" if int(row.get("count") or 0) else "successful"
 
     def fail_pipeline_run(self, pipeline_run_id: int | None, error: str) -> None:
@@ -151,7 +155,7 @@ class RunRepositoryMixin:
             """
             UPDATE pipeline_runs
             SET status = 'failed', error = %s, finished_at = now(), updated_at = now()
-            WHERE id = %s
+            WHERE id = %s AND status <> 'interrupted'
             """,
             (error, pipeline_run_id),
         )
@@ -260,7 +264,7 @@ class RunRepositoryMixin:
 
     def active_run_count(self) -> int:
         self.cursor.execute(
-            "SELECT COUNT(*) AS count FROM pipeline_runs WHERE status IN ('queued', 'running', 'started')"
+            "SELECT COUNT(*) AS count FROM pipeline_runs WHERE status IN ('queued', 'running', 'started', 'interrupted')"
         )
         row = self.cursor.fetchone() or {}
         return int(row.get("count") or 0)

@@ -40,7 +40,7 @@ class RunCreateRequest(BaseModel):
     um_datasets_path: str | None = DEFAULT_UM_DATASETS_PATH
     output_path: str = "storage/exports/insights.csv"
     strategy: RunStrategy = RunStrategy.STANDARD
-    render_profile: Literal["full_body", "pruned"] = "pruned"
+    render_profile: Literal["full_body", "pruned"] = "full_body"
 
 
 class StageRunCreateRequest(BaseModel):
@@ -54,14 +54,14 @@ class StageRunCreateRequest(BaseModel):
     open_access_only: bool = True
     overwrite: bool = False
     delete_pdf: bool = False
-    render_profile: Literal["full_body", "pruned"] = "pruned"
+    render_profile: Literal["full_body", "pruned"] = "full_body"
     output_path: str | None = None
 
 
 class RunCreateResponse(BaseModel):
     pipeline_run_id: int
     task_id: str | None = None
-    status: Literal["queued", "running", "successful", "completed_with_errors", "failed", "skipped"]
+    status: Literal["queued", "running", "successful", "completed_with_errors", "failed", "skipped", "interrupted"]
 
 
 class StageRunSummary(BaseModel):

@@ -89,7 +89,7 @@ class PublicationRepositoryMixin:
         self, limit: int | None = None, pipeline_run_id: int | None = None
     ) -> list[dict[str, Any]]:
         query = """
-            SELECT p.paper_id AS "paperId", p.title, p.open_access_url AS url
+            SELECT p.paper_id AS "paperId", p.title, p.open_access_url AS url, p.raw
             FROM publications p
             WHERE p.open_access_url IS NOT NULL
               AND p.open_access_url != ''

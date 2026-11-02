@@ -7,7 +7,7 @@ export type VisualStage = StageInfo & {
   run?: StageRunSummary;
 };
 
-const COMPLETE_STATUSES = new Set(["successful", "completed_with_errors", "failed", "skipped"]);
+const COMPLETE_STATUSES = new Set(["successful", "completed_with_errors", "failed", "skipped", "interrupted"]);
 const ACTIVE_STATUSES = new Set(["queued", "running", "started"]);
 const SUCCESS_EDGE_STATUSES = new Set(["successful", "queued", "running", "started"]);
 const ERROR_STATUSES = new Set(["completed_with_errors", "failed", "error"]);
@@ -105,7 +105,7 @@ export function edgeToneFromSourceStatus(status: string): EdgeTone {
   if (status === "failed" || status === "error") {
     return "error";
   }
-  if (status === "skipped" || status === "warning") {
+  if (status === "interrupted" || status === "skipped" || status === "warning") {
     return "warning";
   }
   if (SUCCESS_EDGE_STATUSES.has(status)) {
@@ -121,7 +121,7 @@ export function statusTone(status: string): StatusTone {
   if (status === "failed" || status === "error") {
     return "error";
   }
-  if (status === "skipped" || status === "warning" || status === "completed_with_errors") {
+  if (status === "interrupted" || status === "skipped" || status === "warning" || status === "completed_with_errors") {
     return "warning";
   }
   if (status === "pending" || status === "NULL") {

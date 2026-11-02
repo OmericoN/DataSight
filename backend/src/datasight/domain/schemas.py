@@ -43,6 +43,7 @@ class MentionEvidence(BaseModel):
 
 
 class DatasetMetadata(BaseModel):
+    features: dict[str, Any] | None = None
     reference_title: str | None = None
     persistent_identifier: str | None = None
     dataset_authors: list[str] = Field(default_factory=list)
@@ -55,6 +56,7 @@ class DatasetMetadata(BaseModel):
 
 
 class ExtractionProvenance(BaseModel):
+    model_config = {"extra": "allow"}
     tei_path: str | None = None
     markdown_path: str | None = None
     section_id: str | None = None
@@ -124,7 +126,7 @@ class UMMatchDecision(BaseModel):
 
 class StageResult(BaseModel):
     stage: str
-    status: Literal["successful", "completed_with_errors", "failed", "skipped"]
+    status: Literal["successful", "completed_with_errors", "failed", "skipped", "interrupted"]
     count: int = 0
     message: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
