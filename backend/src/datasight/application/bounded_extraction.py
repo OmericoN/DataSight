@@ -234,6 +234,11 @@ Return no lines when there is no dataset evidence. Never output quotations.
         data = {'target_dataset': target, 'fields': field_guide(models),
                 'evidence': [{'evidence_id': item.evidence_id, 'quote': item.quote, 'placement': item.placement,
                               'section': item.section_heading} for item in evidence]}
+        # A field repair must be unable to regenerate the other, already validated fields.
+        observation = create_model('RequestedField', __base__=SparseField,
+            field=(Literal[tuple(data['fields'])], Field(alias='f')))
+        response = create_model('RequestedFeatures', __base__=SparseFeatures,
+            observations=(list[observation], Field(max_length=len(data['fields']))))
         def validate(result):
             allowed = set(field_guide(models))
             paths = [item.field for item in result.observations]
@@ -241,7 +246,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 raise ValueError('Unknown or duplicate field paths')
         try:
             instruction = SPARSE + ('\nRepair invalid fields: use exact supported values and valid field types only.' if repair else '')
-            result = self.request(instruction, data, SparseFeatures, validate)
+            result = self.request(instruction, data, response, validate)
             valid, invalid = [], []
             for observed in result.observations:
                 try:

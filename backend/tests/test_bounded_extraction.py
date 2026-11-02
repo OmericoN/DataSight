@@ -12,12 +12,12 @@ class Client:
     def __init__(self): self.calls = []
     def complete(self, payload, model, record_attempt, validate):
         self.before_attempt()
-        self.calls.append(model)
+        self.calls.append(SparseFeatures if issubclass(model, SparseFeatures) else model)
         data = json.loads(payload['messages'][1]['content'])
         if model is CompactUnits:
             result = CompactUnits(selections=[(i, 'Alpha', 'r')
                                         for i, line in enumerate(data['lines']) if 'Alpha' in line['text']])
-        elif model is SparseFeatures:
+        elif issubclass(model, SparseFeatures):
             result = SparseFeatures(observations=[])
         else:
             result = OccurrenceAnswers.model_validate({'occurrences': [
@@ -152,6 +152,10 @@ def test_only_invalid_fields_are_repaired_and_valid_facts_are_reused():
             self.before_attempt()
             data = json.loads(payload['messages'][1]['content'])
             self.calls.append(set(data['fields']))
+            schema = model.model_json_schema()
+            field_schema = schema['$defs']['RequestedField']['properties']['f']
+            assert field_schema.get('enum', [field_schema.get('const')]) == list(data['fields'])
+            assert schema['properties']['observations']['maxItems'] == len(data['fields'])
             observations = [] if len(data['fields']) == 1 else [
                 SparseField(field='identity.name', state='reported', values_json='["Alpha"]', evidence_ids=['e1']),
                 SparseField(field='identity.aliases', state='reported', values_json='["Invented"]', evidence_ids=['e1'])]

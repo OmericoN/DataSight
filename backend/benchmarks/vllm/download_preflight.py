@@ -38,5 +38,7 @@ if __name__ == '__main__':
             repo.finish_pipeline_run(run_id, result['status'])
     print(json.dumps({'run_id': run_id, 'status': result['status'],
                       'papers': [{'paper_id': row['paper_id'], 'success': row['success'],
-                                  'failure_category': row.get('failure_category')}
+                                  'failure_category': row.get('failure_category'),
+                                  'attempts': (row.get('quality_metrics') or {}).get('attempts'),
+                                  'locations_attempted': (row.get('quality_metrics') or {}).get('locations_attempted')}
                                  for row in result.get('payload', {}).get('results', [])]}))
