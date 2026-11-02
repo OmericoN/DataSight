@@ -27,7 +27,7 @@ from datasight.domain.results import DownloadResult
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
 
 logger = logging.getLogger(__name__)
-PDF_DOWNLOADER_VERSION = "pdf-downloader-v2"
+PDF_DOWNLOADER_VERSION = "pdf-downloader-v3"
 RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
@@ -73,7 +73,7 @@ class PDFDownloader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.delay = delay
         self.max_bytes = max_bytes
-        self.max_retries = max(1, max_retries)
+        self.max_retries = min(3, max(1, max_retries))
         self.backoff = max(0.0, backoff)
         self.headers = {
             "User-Agent": (
@@ -152,13 +152,15 @@ class PDFDownloader:
                 attempted.append({'category': result.failure_category, 'attempts': result.quality_metrics.get('attempts', 1)})
                 if result.success or result.failure_category == 'retry_deferred':
                     result.quality_metrics['locations_attempted'] = attempted
+                    result.quality_metrics['attempts'] = sum(item['attempts'] for item in attempted)
                     return result
-            result = result if attempted else self._failure(paper_id, url, 'missing_url', 'No public PDF location available')
+            result = result if attempted else self._failure(paper_id, url, 'missing_url', 'No public PDF location available', attempts=0)
             result.quality_metrics['locations_attempted'] = attempted
+            result.quality_metrics['attempts'] = sum(item['attempts'] for item in attempted)
             return result
         del title
         if not url:
-            return self._failure(paper_id, url, "missing_url", "No URL provided")
+            return self._failure(paper_id, url, "missing_url", "No URL provided", attempts=0)
         visited.add(url)
 
         filepath = self.output_dir / self.generate_filename(paper_id)
@@ -192,7 +194,7 @@ class PDFDownloader:
 
                 content_length = response.headers.get("Content-Length")
                 if content_length and int(content_length) > self.max_bytes:
-                    return self._failure(paper_id, url, "oversized", f"Response exceeds {self.max_bytes} bytes")
+                    return self._failure(paper_id, url, "oversized", f"Response exceeds {self.max_bytes} bytes", attempts=attempt+1)
 
                 warnings: list[str] = []
                 content_type = response.headers.get("Content-Type", "").lower()
@@ -235,18 +237,21 @@ class PDFDownloader:
                 if exc.category == 'html_body' and temp_path:
                     html = temp_path.read_text(encoding='utf-8', errors='replace')[:500000]
                     if any(term in html.lower() for term in ('captcha', 'verify you are human', 'access denied', 'cf-chl-')):
-                        return self._failure(paper_id, url, 'access_blocked', 'Publisher access challenge')
+                        return self._failure(paper_id, url, 'access_blocked', 'Publisher access challenge', attempts=attempt+1)
                     if follow_landing:
                         links = PDFLinks()
                         links.feed(html)
+                        total_attempts = attempt + 1
                         for link in list(dict.fromkeys(urljoin(getattr(response, 'url', None) or url, item) for item in links.urls))[:5]:
                             if link in visited or urlparse(link).scheme not in {'http', 'https'}:
                                 continue
                             linked = self.download_paper(paper_id, link, overwrite=overwrite, follow_landing=False, _visited=visited)
-                            if linked.success:
-                                linked.quality_metrics['attempts'] = linked.quality_metrics.get('attempts', 1) + attempt + 1
+                            total_attempts += linked.quality_metrics.get('attempts', 1)
+                            if linked.success or linked.failure_category == 'retry_deferred':
+                                linked.quality_metrics['attempts'] = total_attempts
                                 return linked
-                if exc.category in {"oversized", "html_body", "invalid_pdf", "empty_body"}:
+                        return self._failure(paper_id, url, exc.category, str(exc), attempts=total_attempts)
+                if exc.category in {"oversized", "html_body", "invalid_pdf", "empty_body", "truncated_pdf"}:
                     return self._failure(paper_id, url, exc.category, str(exc), attempts=attempt+1)
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 last_category, last_error = "timeout_or_connection", str(exc)
@@ -261,9 +266,9 @@ class PDFDownloader:
                         return self._failure(paper_id, url, 'retry_deferred', 'Server requested a later retry', attempts=attempt+1)
                     retry_wait = delay
             except requests.exceptions.RequestException as exc:
-                last_category, last_error = "request_error", str(exc)
+                return self._failure(paper_id, url, 'request_error', str(exc), attempts=attempt+1)
             except (OSError, ValueError) as exc:
-                last_category, last_error = "stream_error", str(exc)
+                return self._failure(paper_id, url, 'stream_error', str(exc), attempts=attempt+1)
             finally:
                 if temp_path is not None:
                     temp_path.unlink(missing_ok=True)
