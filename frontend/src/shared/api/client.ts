@@ -6,6 +6,13 @@ export type HealthResponse = {
   details: Record<string, unknown>;
 };
 
+export type LlmStatus = {
+  configured: boolean;
+  available: boolean;
+  model: string;
+  message: string;
+};
+
 export type StageInfo = {
   name: string;
   label: string | null;
@@ -361,7 +368,7 @@ async function requestBlob(path: string): Promise<CsvDownload> {
 }
 
 export const api = {
-  llmStatus: () => request<{ configured: boolean; available: boolean; model: string; message: string }>("/api/v1/llm/status"),
+  llmStatus: () => request<LlmStatus>("/api/v1/llm/status"),
   extractions: (runId: number, offset = 0, limit = 25) =>
     request<{ items: ExtractionSummary[]; total: number; offset: number; limit: number }>(`/api/v1/runs/${runId}/extractions?offset=${offset}&limit=${limit}`),
   extraction: (runId: number, extractionId: number) =>

@@ -59,11 +59,18 @@ discover -> download_pdf -> grobid_convert -> render_document -> detect_mentions
 1. `discover` materializes an operator-reviewed strategy-v2 preview for every production run. Catalog mode completes direct evidence first, then conditionally runs exact mentions, related works, and focused topic/keyword expansion until its PDF-ready target is met. Random mode uses OpenAlex's native seeded sample operation and preserves the draw order; manual mode runs one expert query. The direct query-first stage remains a development diagnostic only.
 2. `download_pdf` downloads and validates open-access PDFs.
 3. `grobid_convert` submits PDFs to GROBID and stores TEI XML.
-4. `render_document` converts TEI XML into Markdown for extraction.
-5. `detect_mentions` records high-recall dataset mention candidates.
-6. `extract_features` promotes candidates into structured dataset mention records.
+4. `render_document` defaults to complete `full_body` Markdown, including back matter and stable bibliography IDs.
+5. `detect_mentions` records high-recall candidates as a comparison baseline; zero candidates do not prevent LLM extraction.
+6. `extract_features` scans every selected publication through the authenticated DSRI gateway and extracts evidence-backed dataset entries with separate reference occurrences. Immutable source snapshots, request checkpoints, fingerprints and run-specific linkage support explicit resume and historical inspection.
 7. `match_um_dataset` compares mentions against imported UM dataset records and returns all candidate IDs when metadata-only evidence is ambiguous.
 8. `export_insights` writes joined insight rows to CSV.
+
+Automatic standard and high-throughput workflows end at `extract_features`.
+Matching and export remain registered for explicit use. GPU unavailability leaves
+an interrupted, manually resumable run; it never substitutes rules output.
+See [the extraction contract and operational guide](../backend/LLM_EXTRACTION.md)
+for the schema, configuration, API, exports and evaluation gate. This phase
+captures FAIR/citation evidence without assigning compliance or formality scores.
 
 ### Adaptive OpenAlex discovery funnel
 

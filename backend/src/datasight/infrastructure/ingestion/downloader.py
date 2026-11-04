@@ -33,10 +33,20 @@ RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 def pdf_locations(preferred: str | None, raw: dict[str, Any] | None = None) -> list[str]:
     raw = raw or {}
-    locations = [raw.get('best_oa_location'), raw.get('primary_location'), *(raw.get('locations') or [])]
-    urls = [preferred, *(loc.get('pdf_url') for loc in locations if isinstance(loc, dict)),
-            *(loc.get('landing_page_url') for loc in locations if isinstance(loc, dict))]
-    return list(dict.fromkeys(url for url in urls if url and urlparse(url).scheme in {'http', 'https'}))
+    extra = raw.get('locations')
+    locations = [
+        raw.get('best_oa_location'),
+        raw.get('primary_location'),
+        *(extra if isinstance(extra, list) else []),
+    ]
+    urls = [
+        preferred,
+        *(loc.get('pdf_url') for loc in locations if isinstance(loc, dict)),
+        *(loc.get('landing_page_url') for loc in locations if isinstance(loc, dict)),
+    ]
+    return list(dict.fromkeys(
+        url for url in urls if isinstance(url, str) and urlparse(url).scheme in {'http', 'https'}
+    ))
 
 
 class PDFLinks(HTMLParser):
@@ -46,10 +56,13 @@ class PDFLinks(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
-        if tag == 'meta' and values.get('name', '').lower() == 'citation_pdf_url' and values.get('content'):
-            self.urls.append(values['content'])
-        if tag == 'a' and values.get('href') and (values.get('type') == 'application/pdf' or urlparse(values['href']).path.lower().endswith('.pdf')):
-            self.urls.append(values['href'])
+        name = values.get('name') or ''
+        content = values.get('content')
+        href = values.get('href')
+        if tag == 'meta' and name.lower() == 'citation_pdf_url' and content:
+            self.urls.append(content)
+        if tag == 'a' and href and (values.get('type') == 'application/pdf' or urlparse(href).path.lower().endswith('.pdf')):
+            self.urls.append(href)
 
 
 class DownloadValidationError(ValueError):

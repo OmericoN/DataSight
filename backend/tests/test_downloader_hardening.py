@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from datasight.infrastructure.ingestion.downloader import PDFDownloader, pdf_locations
+from datasight.infrastructure.ingestion.downloader import PDFDownloader, PDFLinks, pdf_locations
 
 
 VALID_PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
@@ -166,6 +166,15 @@ def test_access_challenge_does_not_follow_links(tmp_path, monkeypatch):
 def test_locations_keep_preferred_then_pdf_then_landing_order():
     assert pdf_locations('https://x/a.pdf', {'best_oa_location': {'pdf_url': 'https://x/a.pdf', 'landing_page_url': 'https://x/page'},
                          'locations': [{'pdf_url': 'https://x/b.pdf'}]}) == ['https://x/a.pdf','https://x/b.pdf','https://x/page']
+
+
+def test_locations_ignore_malformed_provider_values():
+    assert pdf_locations(None, {'best_oa_location': {'pdf_url': 123},
+                                'locations': [{'pdf_url': 'https://x/a.pdf'}, {'landing_page_url': None}]}) == ['https://x/a.pdf']
+    assert pdf_locations('https://x/a.pdf', {'locations': 123}) == ['https://x/a.pdf']
+    links = PDFLinks()
+    links.feed('<meta name><a href><meta name="citation_pdf_url" content="https://x/a.pdf">')
+    assert links.urls == ['https://x/a.pdf']
 
 
 def test_truncated_pdf_is_not_retried_and_attempts_are_capped(tmp_path, monkeypatch):

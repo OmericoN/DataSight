@@ -11,6 +11,7 @@ from typing import Any
 import psycopg2.extras
 
 from datasight import config
+from datasight.application.bounded_extraction import BoundedExtractionEngine
 from datasight.application.extraction_engine import CHUNK_CHARACTERS, OVERLAP_CHARACTERS, ExtractionEngine
 from datasight.domain.extraction import PROMPT_VERSION, SCHEMA_VERSION
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
@@ -26,20 +27,32 @@ def extraction_configuration(legacy: bool | None = None) -> dict[str, Any]:
             raise ValueError('LLM_EXTRACTION_STRATEGY must be legacy or bounded')
         legacy = strategy == 'legacy'
     settings = {
-        "schema_version": SCHEMA_VERSION, "prompt_version": PROMPT_VERSION if legacy else 'indexed-sparse-v14',
-        "llm_model": config.LLM_MODEL, "model_revision": config.LLM_MODEL_REVISION,
-        "renderer_version": RENDERER_VERSION, "render_profile": "full_body",
-        "chunk_characters": CHUNK_CHARACTERS if legacy else 6000, "overlap_characters": OVERLAP_CHARACTERS,
+        "schema_version": SCHEMA_VERSION,
+        "prompt_version": PROMPT_VERSION if legacy else 'indexed-sparse-v14',
+        "llm_model": config.LLM_MODEL,
+        "model_revision": config.LLM_MODEL_REVISION,
+        "renderer_version": RENDERER_VERSION,
+        "render_profile": "full_body",
+        "chunk_characters": CHUNK_CHARACTERS if legacy else 6000,
+        "overlap_characters": OVERLAP_CHARACTERS,
         "feature_batching": "group_then_bisect_v1" if legacy else 'sparse_groups_compact_occurrences8_v3',
-        "context_tokens": CONTEXT_TOKENS, "max_prompt_characters": MAX_PROMPT_CHARS,
+        "context_tokens": CONTEXT_TOKENS,
+        "max_prompt_characters": MAX_PROMPT_CHARS,
         "template_reserve_tokens": TEMPLATE_RESERVE,
-        "temperature": 0, "max_tokens": MAX_TOKENS, "enable_thinking": False,
+        "temperature": 0,
+        "max_tokens": MAX_TOKENS,
+        "enable_thinking": False,
     }
     if not legacy:
-        settings.update({'ordinary_seconds': 300, 'ordinary_attempts': 50,
-                         'long_seconds': 900, 'long_attempts': 100,
-                         'long_source_characters': 60000, 'long_reference_occurrences': 30,
-                         'occurrence_batch_size': 8})
+        settings.update({
+            'ordinary_seconds': 300,
+            'ordinary_attempts': 50,
+            'long_seconds': 900,
+            'long_attempts': 100,
+            'long_source_characters': 60000,
+            'long_reference_occurrences': 30,
+            'occurrence_batch_size': 8,
+        })
     return settings
 
 
@@ -74,7 +87,7 @@ def prepare_source(row: dict[str, Any]) -> tuple[str, Path, str]:
 
 def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict[str, Any]) -> dict[str, Any]:
     previous = repo.latest_publication_extraction(run_id, row["publication_id"])
-    frozen = (repo.get_pipeline_run(run_id) or {}).get('config', {}).get('extraction') if hasattr(repo, 'get_pipeline_run') else None
+    frozen = (repo.get_pipeline_run(run_id) or {}).get('config', {}).get('extraction')
     settings = frozen or extraction_configuration()
     try:
         if previous and previous.get("source_path"):
@@ -107,12 +120,10 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
     artifact_id = repo.cursor.fetchone()["id"]
     repo.attach_extraction_source(extraction_id, str(path), digest, artifact_id)
     try:
-        from datasight.application.bounded_extraction import BoundedExtractionEngine
         budget = BoundedExtractionEngine(repo, client, extraction_id, text)
-        client.extraction_budget = budget
         try:
             if settings['prompt_version'] == PROMPT_VERSION:
-                result = ExtractionEngine(repo, client, extraction_id, text).run(row['paper_id'], digest)
+                result = ExtractionEngine(repo, client, extraction_id, text, budget).run(row['paper_id'], digest)
                 budget.remaining()
             else:
                 result = budget.run(row['paper_id'], digest)
@@ -123,9 +134,13 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
             finally:
                 client.before_attempt = None
                 client.remaining_time = None
-                client.extraction_budget = None
         repo.publish_extraction(extraction_id, result)
-        return {"paper_id": row["paper_id"], "status": "successful", "datasets": len(result.datasets), "extraction_id": extraction_id}
+        return {
+            "paper_id": row["paper_id"],
+            "status": "successful",
+            "datasets": len(result.datasets),
+            "extraction_id": extraction_id,
+        }
     except InferenceUnavailable as exc:
         repo.fail_publication_extraction(extraction_id, "interrupted", str(exc))
         repo.interrupt_extraction_run(run_id, str(exc))

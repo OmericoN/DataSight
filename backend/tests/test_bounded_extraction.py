@@ -1,4 +1,5 @@
 import json
+from typing import Callable
 
 import pytest
 
@@ -9,7 +10,11 @@ from test_llm_extraction import MemoryRequests
 
 
 class Client:
-    def __init__(self): self.calls = []
+    before_attempt: Callable[[], float]
+
+    def __init__(self):
+        self.calls = []
+
     def complete(self, payload, model, record_attempt, validate):
         self.before_attempt()
         self.calls.append(SparseFeatures if issubclass(model, SparseFeatures) else OccurrenceAnswers if issubclass(model, OccurrenceAnswers) else model)
@@ -73,7 +78,7 @@ def test_sparse_rejects_unknown_fields_and_unsupported_literal():
     for field, value in [('identity.invented', 'Alpha'), ('identity.name', 'Beta')]:
         from datasight.application.bounded_extraction import SparseField
         with pytest.raises(ValueError):
-            decode([SparseField(field=field, state='reported', values_json=json.dumps([value]), evidence_ids=['e1'])],
+            decode([SparseField(f=field, s='reported', v=json.dumps([value]), e=['e1'])],
                    {'identity': c.IdentityFeatures}, [evidence])
 
 
@@ -183,8 +188,8 @@ def test_only_invalid_fields_are_repaired_and_valid_facts_are_reused():
             assert field_schema.get('enum', [field_schema.get('const')]) == list(data['fields'])
             assert schema['properties']['observations']['maxItems'] == len(data['fields'])
             observations = [] if len(data['fields']) == 1 else [
-                SparseField(field='identity.name', state='reported', values_json='["Alpha"]', evidence_ids=['e1']),
-                SparseField(field='identity.aliases', state='reported', values_json='["Invented"]', evidence_ids=['e1'])]
+                SparseField(f='identity.name', s='reported', v='["Alpha"]', e=['e1']),
+                SparseField(f='identity.aliases', s='reported', v='["Invented"]', e=['e1'])]
             result = SparseFeatures(observations=observations)
             validate(result)
             return result

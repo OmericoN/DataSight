@@ -98,6 +98,10 @@ def retry_delay(value: str | None, attempt: int) -> float:
 class GatewayClient:
     def __init__(self) -> None:
         self.session = requests.Session()
+        self.before_attempt: Callable[[], float] | None = None
+        self.remaining_time: Callable[[], float] | None = None
+        self.attempt_is_retry = False
+        self.request_is_repair = False
 
     def close(self) -> None:
         self.session.close()
@@ -130,7 +134,7 @@ class GatewayClient:
             raise InferenceError("LLM_BASE_URL and LLM_API_KEY are required")
         for attempt in range(3):
             self.attempt_is_retry = attempt > 0
-            remaining = self.before_attempt() if getattr(self, 'before_attempt', None) else config.LLM_TIMEOUT_SEC
+            remaining = self.before_attempt() if self.before_attempt else config.LLM_TIMEOUT_SEC
             started = time.monotonic()
             response_data: Any = None
             status: int | None = None
@@ -168,7 +172,7 @@ class GatewayClient:
                 parsed = response_model.model_validate_json(choices[0]["message"]["content"])
                 validate(parsed)
             except requests.ReadTimeout:
-                deadline_limited = bool(getattr(self, 'remaining_time', None)) and read_timeout < config.LLM_TIMEOUT_SEC
+                deadline_limited = self.remaining_time is not None and read_timeout < config.LLM_TIMEOUT_SEC
                 retry = not deadline_limited
                 error = (ExtractionBudgetExceeded('extraction_budget_exceeded: request read deadline; resume explicitly')
                          if deadline_limited else InferenceUnavailable('Gateway connection failed or timed out; extraction can be resumed'))
@@ -190,7 +194,7 @@ class GatewayClient:
             # Long server-requested waits require an explicit later resume.
             if delay > 60:
                 raise InferenceUnavailable("Rate limit requires a later resume")
-            if getattr(self, 'remaining_time', None) and delay >= self.remaining_time():
+            if self.remaining_time is not None and delay >= self.remaining_time():
                 raise ExtractionBudgetExceeded('extraction_budget_exceeded: retry wait exceeds remaining time; resume explicitly')
             time.sleep(delay)
         raise InferenceError("Inference attempts exhausted")

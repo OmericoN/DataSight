@@ -9,12 +9,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from datasight.application.extraction_engine import LOCATE, anchor_passage, source_blocks
+from datasight.application.extraction_engine import Block, LOCATE, anchor_passage, source_blocks
 from datasight.domain.extraction import LocatedPassages
 from datasight.infrastructure.llm.client import GatewayClient, payload_for
 
 
-def samples(export_dir: Path, source_dir: Path) -> list[tuple[str, str, object]]:
+def samples(export_dir: Path, source_dir: Path) -> list[tuple[str, str, tuple[str, Block]]]:
     with (export_dir / "extractions.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     output = []
@@ -33,7 +33,7 @@ def samples(export_dir: Path, source_dir: Path) -> list[tuple[str, str, object]]
     return output
 
 
-def probe(sample: tuple[str, str, object], repetition: int) -> dict[str, object]:
+def probe(sample: tuple[str, str, tuple[str, Block]], repetition: int) -> dict[str, object]:
     paper_id, digest, (text, block) = sample
     attempts: list[dict] = []
     started = time.monotonic()

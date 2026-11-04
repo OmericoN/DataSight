@@ -3,7 +3,7 @@
 import json
 import re
 import time
-from typing import Literal
+from typing import Any, Literal, cast
 
 from pydantic import ConfigDict, Field, TypeAdapter, create_model
 
@@ -19,12 +19,14 @@ GROUPS = {
     'accessibility': c.AccessibilityFeatures, 'interoperability': c.InteroperabilityFeatures,
     'reusability': c.ReusabilityFeatures,
 }
+SUPPORTED_FIELDS = tuple(f'{group}.{field}' for group, model in
+                         {**GROUPS, 'citation': c.CitationFeatures}.items() for field in model.model_fields)
 
 
 class SparseField(c.StrictModel):
     model_config = ConfigDict(extra='forbid', populate_by_name=True)
-    field: Literal[tuple(f'{group}.{field}' for group, model in
-                        {**GROUPS, 'citation': c.CitationFeatures}.items() for field in model.model_fields)] = Field(alias='f')
+    # Pydantic expands this runtime tuple into a closed schema; Pyright cannot evaluate it.
+    field: Literal[SUPPORTED_FIELDS] = Field(alias='f')  # pyright: ignore[reportInvalidTypeForm]
     state: Literal['reported', 'unclear', 'conflicting'] = Field(alias='s')
     values_json: str = Field(alias='v')
     evidence_ids: list[str] = Field(alias='e')
@@ -80,8 +82,25 @@ def requested_features(models):
     fields = tuple(field_guide(models))
     observation = create_model('RequestedField', __base__=SparseField,
         field=(Literal[fields], Field(alias='f')))
-    return create_model('RequestedFeatures', __base__=SparseFeatures,
-        observations=(list[observation], Field(max_length=len(fields))))
+    return cast(type[SparseFeatures], create_model('RequestedFeatures', __base__=SparseFeatures,
+        observations=(list[observation], Field(max_length=len(fields)))))
+
+
+def subset_models(models: dict[str, type[c.StrictModel]], paths: set[str], suffix: str) -> dict[str, type[c.StrictModel]]:
+    # Preserve model names because they are part of persisted request fingerprints.
+    selected = {}
+    for group, model in models.items():
+        definitions: dict[str, Any] = {}
+        for name, field in model.model_fields.items():
+            if f'{group}.{name}' not in paths:
+                continue
+            annotation = field.annotation
+            if annotation is None:
+                raise TypeError(f'{group}.{name} has no field type')
+            definitions[name] = (annotation, Field(default_factory=annotation))
+        if definitions:
+            selected[group] = create_model(model.__name__ + suffix, __base__=c.StrictModel, **definitions)
+    return selected
 
 
 def compact_occurrence_fields(models, evidence_count):
@@ -98,8 +117,9 @@ def compact_occurrence_fields(models, evidence_count):
 
 
 def decode_compact(fields, models, evidence):
-    observations = [SparseField(field=path, state={'r': 'reported', 'u': 'unclear', 'c': 'conflicting'}[value[0]],
-                               values_json=json.dumps(value[1]), evidence_ids=[evidence[i].evidence_id for i in value[2]])
+    observations = [SparseField(f=path, s=cast(Literal['reported', 'unclear', 'conflicting'],
+                                              {'r': 'reported', 'u': 'unclear', 'c': 'conflicting'}[value[0]]),
+                               v=json.dumps(value[1]), e=[evidence[i].evidence_id for i in value[2]])
                     for path, value in fields.model_dump(mode='json').items() if value is not None]
     return decode(observations, models, evidence)
 
@@ -203,7 +223,8 @@ class BoundedExtractionEngine(ExtractionEngine):
         def selected(result):
             from datasight.application.extraction_engine import IndexedLine
             output = [IndexedLine(line_index=line, dataset_name=name,
-                                  kind={'r': 'reference', 's': 'support', 'a': 'ambiguous'}[kind])
+                                  kind=cast(Literal['reference', 'support', 'ambiguous'],
+                                            {'r': 'reference', 's': 'support', 'a': 'ambiguous'}[kind]))
                       for line, name, kind in result.selections]
             for item in output:
                 if not 0 <= item.line_index < len(units):
@@ -214,7 +235,7 @@ class BoundedExtractionEngine(ExtractionEngine):
                     item.dataset_name = None
             return output
 
-        def validate(result):
+        def validate(result: CompactUnits):
             selected(result)
 
         def section_at(offset):
@@ -278,7 +299,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
                               'section': item.section_heading} for item in evidence]}
         # A field repair must be unable to regenerate the other, already validated fields.
         response = requested_features(models)
-        def validate(result):
+        def validate(result: SparseFeatures):
             allowed = set(field_guide(models))
             paths = [item.field for item in result.observations]
             if len(paths) != len(set(paths)) or not set(paths) <= allowed:
@@ -298,10 +319,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
             output = decode(valid, models, evidence)
             if invalid:
                 self.rejected_fields += len(invalid)
-                partial = {group: create_model(model.__name__ + '_repair', __base__=c.StrictModel,
-                           **{name: (definition.annotation, Field(default_factory=definition.annotation))
-                              for name, definition in model.model_fields.items() if f'{group}.{name}' in invalid})
-                           for group, model in models.items() if any(path.startswith(group+'.') for path in invalid)}
+                partial = subset_models(models, set(invalid), '_repair')
                 fixed = self.sparse(target, evidence, partial, repair=True)
                 for group, fields in fixed.items():
                     output[group] = models[group].model_validate({**output[group].model_dump(), **fields.model_dump()})
@@ -318,9 +336,7 @@ Return no lines when there is no dataset evidence. Never output quotations.
                 fields = [(group, name) for group, model in models.items() for name in model.model_fields]
                 outputs = []
                 for subset in (fields[:len(fields)//2], fields[len(fields)//2:]):
-                    partial = {group: create_model(model.__name__ + '_subset', __base__=c.StrictModel,
-                               **{name: (model.model_fields[name].annotation, Field(default_factory=model.model_fields[name].annotation)) for g, name in subset if g == group})
-                               for group, model in models.items() if any(g == group for g, _ in subset)}
+                    partial = subset_models(models, {f'{group}.{name}' for group, name in subset}, '_subset')
                     outputs.append(self.sparse(target, evidence, partial, repair=repair))
                 return {group: model.model_validate({key: value for output in outputs if group in output
                                                      for key, value in output[group].model_dump().items()}) for group, model in models.items()}
@@ -332,14 +348,14 @@ Return no lines when there is no dataset evidence. Never output quotations.
         answer = create_model('RequestedOccurrence', __base__=OccurrenceAnswer,
             occurrence_id=(Literal[tuple(oid for oid, _, _ in entries)], ...),
             fields=(fields, ...))
-        response = create_model('RequestedOccurrences', __base__=OccurrenceAnswers,
-            occurrences=(list[answer], Field(min_length=len(entries), max_length=len(entries))))
+        response = cast(type[OccurrenceAnswers], create_model('RequestedOccurrences', __base__=OccurrenceAnswers,
+            occurrences=(list[answer], Field(min_length=len(entries), max_length=len(entries)))))
         data = {'fields': guide, 'occurrences': [
             {'occurrence_id': oid, 'target_dataset': target,
              'evidence': [{'index': i, 'quote': item.quote, 'placement': item.placement,
                            'section': item.section_heading} for i, item in enumerate(evidence)]}
             for oid, target, evidence in entries]}
-        def validate(result):
+        def validate(result: OccurrenceAnswers):
             ids = [item.occurrence_id for item in result.occurrences]
             if len(ids) != len(set(ids)) or set(ids) != {entry[0] for entry in entries}:
                 raise ValueError('Missing, duplicate, or unknown occurrence ID')
