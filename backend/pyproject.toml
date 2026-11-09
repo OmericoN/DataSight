@@ -34,7 +34,7 @@ datasight = ["assets/tokenizer.json", "assets/QWEN-LICENSE.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
 
 [tool.basedpyright]
 venvPath = "."
