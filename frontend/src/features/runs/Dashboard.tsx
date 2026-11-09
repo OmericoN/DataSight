@@ -140,7 +140,9 @@ import {
   activeStageCount,
   activeParallelStages,
   edgeToneFromSourceStatus,
+  formatStageElapsed,
   formatStageName,
+  hasLiveStageTimer,
   isTerminalStatus,
   isEnabledStage,
   isWorkingStatus,
@@ -871,7 +873,7 @@ function WorkspacePage() {
     queryFn: () => api.run(numericRunId),
     enabled: Number.isFinite(numericRunId),
     refetchInterval: (query) =>
-      isActiveRun(query.state.data?.status) ? 2500 : false,
+      isActiveRun(query.state.data?.status) ? 1000 : false,
   });
   const eventsQuery = useQuery({
     queryKey: ["run-events", numericRunId],
@@ -955,6 +957,7 @@ function WorkspacePage() {
       <div className="grid min-h-[620px] min-w-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(420px,460px)]">
         <PipelineGraph
           stages={visualStages}
+          runActive={isActiveRun(selectedRun?.status)}
           selectedStageName={selectedStage?.name ?? null}
           onSelectStage={inspectStage}
         />
@@ -1548,13 +1551,25 @@ function pipelineEdgesForNodes(nodes: GraphNode[]) {
 
 function PipelineGraph({
   stages,
+  runActive,
   selectedStageName,
   onSelectStage,
 }: {
   stages: VisualStage[];
+  runActive: boolean;
   selectedStageName: string | null;
   onSelectStage: (stageName: string) => void;
 }) {
+  const hasLiveTimer = runActive && stages.some(hasLiveStageTimer);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!hasLiveTimer) return;
+
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [hasLiveTimer]);
+
   if (!stages.length) {
     return (
       <EmptyState
@@ -1664,6 +1679,7 @@ function PipelineGraph({
           <PipelineNode
             key={node.stage.name}
             node={node}
+            elapsed={formatStageElapsed(node.stage, runActive ? now : undefined)}
             selected={selectedStageName === node.stage.name}
             onSelect={() => onSelectStage(node.stage.name)}
           />
@@ -1675,10 +1691,12 @@ function PipelineGraph({
 
 function PipelineNode({
   node,
+  elapsed,
   selected,
   onSelect,
 }: {
   node: GraphNode;
+  elapsed: string | null;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -1689,14 +1707,22 @@ function PipelineNode({
   return (
     <button
       type="button"
-      className={cn("pipeline-node", selected && "pipeline-node-selected")}
+      className={cn("pipeline-node pt-7", selected && "pipeline-node-selected")}
       style={{ left: node.x, top: node.y }}
       data-status-tone={tone}
       data-disabled={!enabled ? "true" : undefined}
       data-working={node.stage.working ? "true" : undefined}
       aria-label={`Inspect ${titleCase(formatStageName(node.stage.name))} status and filter events`}
+      aria-description={elapsed ? `Elapsed time: ${elapsed}` : "Elapsed time unavailable"}
       onClick={onSelect}
     >
+      <span
+        aria-hidden="true"
+        className="absolute top-2 right-3 inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10px] leading-none text-muted-foreground tabular-nums"
+      >
+        <RiTimeLine className="size-3" />
+        {elapsed ?? "—"}
+      </span>
       <span className="pipeline-node-icon">
         <Icon />
       </span>

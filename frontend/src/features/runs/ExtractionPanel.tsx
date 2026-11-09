@@ -55,7 +55,7 @@ export function ExtractionPanel({ run }: { run: PipelineRunSummary }) {
   return <section aria-labelledby="extraction-heading" className="mt-5 overflow-hidden rounded-xl border bg-card">
     <div className="flex flex-wrap items-start justify-between gap-3 border-b p-4">
       <div><h2 id="extraction-heading" className="font-heading font-medium">Dataset extraction</h2>
-        <p className="mt-1 text-xs text-muted-foreground">Publication evidence for later citation and FAIR assessment.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Publication evidence for dataset identity and UM catalogue matching.</p>
         {status.data ? <p className="mt-1 text-xs text-muted-foreground">{status.data.message}</p> : null}
       </div>
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={status.isFetching} onClick={() => void status.refetch()}>Check model</Button>
@@ -103,7 +103,7 @@ export function ExtractionPanel({ run }: { run: PipelineRunSummary }) {
           {data?.result?.datasets.map(dataset => <article key={dataset.dataset_local_id} className="space-y-3 border-t pt-4">
             <h3 className="font-heading font-medium">{dataset.display_name}</h3>
             {dataset.review_reasons.length ? <Alert><AlertDescription>{dataset.review_reasons.join("; ")}</AlertDescription></Alert> : null}
-            {(["identity", "use", "findability", "accessibility", "interoperability", "reusability"] as const).map(group => <details key={group} className="border-b pb-2"><summary className="cursor-pointer text-sm font-medium capitalize">{label(group)}</summary><Observations values={dataset[group]} /></details>)}
+            {(["identity", "use"] as const).map(group => <details key={group} className="border-b pb-2"><summary className="cursor-pointer text-sm font-medium capitalize">{label(group)}</summary><Observations values={dataset[group]} /></details>)}
             <details><summary className="cursor-pointer text-sm font-medium">Reference occurrences ({dataset.occurrences.length})</summary>
               {dataset.occurrences.map(occurrence => <div key={occurrence.occurrence_id} className="mt-3 space-y-2 border-t pt-3">
                 <p className="text-xs">{occurrence.bibliography_only ? "Bibliography only · does not establish reuse" : occurrence.occurrence_id}</p><EvidenceLinks ids={occurrence.evidence_ids} />

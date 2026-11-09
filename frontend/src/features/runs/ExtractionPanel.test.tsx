@@ -43,16 +43,14 @@ describe("dataset extraction outcomes", () => {
     vi.spyOn(api, "extraction").mockResolvedValue({ id: 10, status: "successful", source_sha256: "abc", error: null,
       config: {}, coverage: { covered_characters: 20 }, metrics: {}, requests: [], result: { datasets: [{
         dataset_local_id: "d1", display_name: "Alpha", review_reasons: [], occurrences: [],
-        identity: { name: { state: "not_reported", values: [] } }, use: {}, findability: {},
-        accessibility: { access_mode: { state: "reported", values: [{ value: "controlled", evidence_ids: ["e1"] }] } },
-        interoperability: {}, reusability: {},
+        identity: { name: { state: "not_reported", values: [] } }, use: {},
       }], evidence: [{ evidence_id: "e1", quote: "Access is controlled.", char_start: 0, char_end: 21, placement: "body", section_heading: "Availability" }], unresolved_mentions: [] },
     } as ExtractionDetail);
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Evidence paper" }));
     expect(await screen.findByText("Access is controlled.")).toBeInTheDocument();
     expect(screen.getByText("Not reported")).toBeInTheDocument();
-    expect(screen.getByText("controlled")).toBeInTheDocument();
+    expect(screen.queryByText("controlled")).not.toBeInTheDocument();
     expect(screen.queryByText(/FAIR score/i)).not.toBeInTheDocument();
   });
 });

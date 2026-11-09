@@ -24,6 +24,33 @@ export function stageStatusLabel(stage: VisualStage) {
   return isEnabledStage(stage) ? stage.status : "NULL";
 }
 
+export function hasLiveStageTimer({ run }: VisualStage) {
+  return Boolean(run?.started_at && !run.finished_at
+    && (ACTIVE_STATUSES.has(run.status) || run.status === "pending")
+    && Number.isFinite(Date.parse(run.started_at)));
+}
+
+export function formatStageElapsed(stage: VisualStage, now: number | undefined) {
+  const { run } = stage;
+  if (!run?.started_at) return null;
+
+  // shortcut: identical timestamps can be written together at completion; show a duration once the worker records a separate start.
+  if (run.started_at === run.finished_at) return null;
+
+  const start = Date.parse(run.started_at);
+  const end = run.finished_at ? Date.parse(run.finished_at) : now;
+  if (end === undefined || (!run.finished_at && !hasLiveStageTimer(stage))) return null;
+
+  const elapsed = end - start;
+  if (!Number.isFinite(elapsed) || (run.finished_at && elapsed < 0)) return null;
+
+  const seconds = Math.floor(Math.max(0, elapsed) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  const clock = `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+  return hours ? `${hours}:${clock}` : clock;
+}
+
 export function mergeStages(stages: StageInfo[], run: PipelineRunSummary | undefined): VisualStage[] {
   const active = isActiveRun(run?.status);
   const enabledStageNames = new Set(
@@ -51,7 +78,7 @@ export function mergeStages(stages: StageInfo[], run: PipelineRunSummary | undef
     }
     if (active && !hasRecordedWorkingStage && !markedActive) {
       markedActive = true;
-      return { ...stage, status: "running", working: true };
+      return { ...stage, status: "queued", working: true };
     }
     return { ...stage, status: "pending", working: false };
   });

@@ -48,8 +48,6 @@ export function InsightSummaryList({
       const paper = typeof row.publication_title === "string" && row.publication_title.trim() ? row.publication_title : String(row.paper_id ?? "Publication not recorded");
       const role = summarizeFeature(row, "use", "roles") ?? (typeof row.dataset_role === "string" ? row.dataset_role.replaceAll("_", " ") : null);
       const use = summarizeFeature(row, "use", "description") ?? summarizeFeature(row, "use", "purposes");
-      const access = summarizeFeature(row, "accessibility", "availability_statement") ?? summarizeFeature(row, "accessibility", "access_mode");
-      const license = summarizeFeature(row, "reusability", "licenses");
       const match = typeof row.um_dataset_title === "string" && row.um_dataset_title.trim() ? row.um_dataset_title : null;
       const discovery = row.discovery_method ?? row.discovery_mode;
       return <article key={`${String(row.paper_id)}-${dataset}-${index}`} className="space-y-3 px-4 py-4 sm:px-5">
@@ -64,10 +62,8 @@ export function InsightSummaryList({
             <Button type="button" variant="outline" size="sm" onClick={() => onSelect(row)} aria-label={`View details for ${dataset} in ${paper}`}>View details</Button>
           </div>
         </div>
-        {use || access || license || match ? <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
+        {use || match ? <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2 xl:grid-cols-4">
           {use ? <div className="min-w-0"><dt className="text-xs text-muted-foreground">How it was used</dt><dd className="mt-0.5 line-clamp-2 break-words">{use}</dd></div> : null}
-          {access ? <div className="min-w-0"><dt className="text-xs text-muted-foreground">Access</dt><dd className="mt-0.5 line-clamp-2 break-words">{access}</dd></div> : null}
-          {license ? <div className="min-w-0"><dt className="text-xs text-muted-foreground">License</dt><dd className="mt-0.5 line-clamp-2 break-words">{license}</dd></div> : null}
           {match ? <div className="min-w-0"><dt className="text-xs text-muted-foreground">Catalog match</dt><dd className="mt-0.5 line-clamp-2 break-words">{match}</dd></div> : null}
         </dl> : <p className="text-xs text-muted-foreground">No additional facts reported</p>}
       </article>;

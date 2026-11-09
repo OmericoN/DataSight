@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./app/App";
 import { TooltipProvider } from "./components/ui/tooltip";
+import type { PipelineRunSummary } from "./shared/api/client";
 
 function renderApp(fetchMock: ReturnType<typeof vi.fn>, initialPath = "/") {
   vi.stubGlobal("fetch", fetchMock);
@@ -702,8 +703,6 @@ describe("App routed workflow", () => {
               um_dataset_title: "Health cohort catalog record",
               features: {
                 use: { description: { state: "reported", values: [{ value: "Longitudinal analysis", evidence_ids: ["e1"] }] } },
-                accessibility: { access_mode: { state: "reported", values: [{ value: "controlled", evidence_ids: ["e2"] }] } },
-                reusability: { licenses: { state: "reported", values: [{ value: { statement: "Research use license" }, evidence_ids: ["e3"] }] } },
               },
             },
           ],
@@ -729,8 +728,6 @@ describe("App routed workflow", () => {
 
     await screen.findByText("Health cohort");
     expect(screen.getByText("Longitudinal analysis")).toBeInTheDocument();
-    expect(screen.getByText("controlled")).toBeInTheDocument();
-    expect(screen.getByText("Research use license")).toBeInTheDocument();
     expect(screen.getByText("Health cohort catalog record")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
     expect(screen.getByLabelText("Include Paper Id")).toBeChecked();
@@ -1183,5 +1180,64 @@ describe("App routed workflow", () => {
     expect(downloadNode).toBeInTheDocument();
     fireEvent.click(downloadNode);
     expect(screen.getByText("Download PDFs.")).toBeInTheDocument();
+  });
+
+  it("starts the timer when a queued stage starts and freezes it when the stage finishes", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2026-05-31T19:02:00Z"));
+    try {
+      const baseFetch = defaultFetchMock();
+      let started = false;
+      let finished = false;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const result = await baseFetch(input, init);
+        if (String(input) !== "/api/v1/runs/39") return result;
+
+        const run = (await result.json()) as PipelineRunSummary;
+        const [discover, download, grobid] = run.stages;
+        Object.assign(discover!, {
+          started_at: "2026-05-31T17:00:00Z",
+          finished_at: "2026-05-31T18:01:02Z",
+        });
+        Object.assign(download!, {
+          status: started ? "running" : "queued",
+          started_at: started ? "2026-05-31T19:02:01Z" : null,
+        });
+        Object.assign(grobid!, { started_at: "invalid" });
+        if (finished) {
+          Object.assign(download!, { status: "successful", finished_at: "2026-05-31T19:02:03Z" });
+          Object.assign(grobid!, {
+            status: "successful",
+            started_at: "2026-05-31T19:02:02Z",
+            finished_at: "2026-05-31T19:02:02Z",
+          });
+        }
+        return response(run);
+      });
+      renderApp(fetchMock, "/runs/39");
+
+      const download = await screen.findByRole("button", { name: /^Inspect Download Pdf/ });
+      const grobid = screen.getByRole("button", { name: /^Inspect Grobid Convert/ });
+      expect(download).toHaveAccessibleDescription("Elapsed time unavailable");
+      expect(grobid).toHaveTextContent("—");
+
+      started = true;
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      await waitFor(() => expect(download).toHaveAccessibleDescription("Elapsed time: 00:00"));
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(download).toHaveAccessibleDescription("Elapsed time: 00:01");
+
+      finished = true;
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      await waitFor(() => expect(download).toHaveTextContent("successful"));
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(download).toHaveAccessibleDescription("Elapsed time: 00:02");
+      expect(screen.getByRole("button", { name: /^Inspect Discover/ })).toHaveTextContent("1:01:02");
+      expect(grobid).toHaveTextContent("—");
+      expect(screen.getByRole("button", { name: /^Inspect Export Insights/ })).toHaveTextContent("—");
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 });

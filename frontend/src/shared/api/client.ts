@@ -103,8 +103,6 @@ export type ExtractionEvidence = {
 export type ExtractedDataset = {
   dataset_local_id: string; display_name: string; review_reasons: string[];
   identity: Record<string, Observation>; use: Record<string, Observation>;
-  findability: Record<string, Observation>; accessibility: Record<string, Observation>;
-  interoperability: Record<string, Observation>; reusability: Record<string, Observation>;
   occurrences: { occurrence_id: string; evidence_ids: string[]; bibliography_only: boolean;
     use: Record<string, Observation>; citation: Record<string, Observation>;
     citation_links: { marker: string; status: string; raw_reference: string | null }[] }[];
