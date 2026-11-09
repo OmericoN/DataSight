@@ -21,15 +21,16 @@ from datasight.infrastructure.ingestion.file_integrity import sha256_file
 TEI = "http://www.tei-c.org/ns/1.0"
 XML = "http://www.w3.org/XML/1998/namespace"
 NS = {"t": TEI}
-RENDERER_VERSION = "tei-renderer-v3"
+RENDERER_VERSION = "tei-renderer-v6"
 RenderProfile = Literal["full_body", "pruned"]
 DEFAULT_RENDER_PROFILE: RenderProfile = "pruned"
 logger = logging.getLogger(__name__)
 
-# The default profile removes low-yield sections by heading. ``full_body`` remains
-# available for recall evaluation and never removes a section based on its heading.
+# Full body remains available for evaluation and LLM extraction.
 PRUNED_SECTION_PATTERNS = (
     r"related.work",
+    r"previous.work",
+    r"prior.work",
     r"literature.review",
     r"discuss",
     r"conclusion",
@@ -75,10 +76,8 @@ def _first_text(element: etree._Element, xpath: str) -> str:
 
 def _parse_references(root: etree._Element) -> dict[str, dict[str, Any]]:
     references: dict[str, dict[str, Any]] = {}
-    for bib in root.xpath("//t:listBibl/t:biblStruct", namespaces=NS):
-        xml_id = bib.get(f"{{{XML}}}id", "")
-        if not xml_id:
-            continue
+    for index, bib in enumerate(root.xpath("//t:listBibl/t:biblStruct | //t:listBibl/t:bibl", namespaces=NS), 1):
+        xml_id = bib.get(f"{{{XML}}}id") or f"reference-{index}"
         authors = [
             _text(node)
             for node in bib.xpath(".//t:author/t:persName/t:surname", namespaces=NS)
@@ -101,6 +100,7 @@ def _parse_references(root: etree._Element) -> dict[str, dict[str, Any]]:
             "doi": dois[0] if dois else "",
             "url": urls[0] if urls else "",
             "label": label,
+            "raw": " ".join(_clean_text(" ".join(bib.itertext())).split()),
         }
     return references
 
@@ -147,6 +147,9 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
         return ""
     tag = etree.QName(element.tag).localname
 
+    if tag == "listBibl":
+        return ""  # References are rendered once with stable IDs below.
+
     if tag == "div":
         heads = element.xpath("t:head", namespaces=NS)
         heading = _text(heads[0]) if heads else ""
@@ -172,11 +175,16 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
         visible = _text(element)
         target = element.get("target", "").lstrip("#")
         if element.get("type") == "bibr":
-            if target in state.references:
-                state.cited_refs.add(target)
-                marker = visible or state.references[target]["label"]
-                return f"[{marker}]{{#{target}}}"
-            return f"[{visible}]" if visible else ""
+            targets = [part.lstrip("#") for part in element.get("target", "").split()]
+            linked = []
+            for ref_id in targets:
+                if ref_id in state.references:
+                    state.cited_refs.add(ref_id)
+                    marker = (visible or state.references[ref_id]["label"]).strip("[]")
+                    linked.append(f"[{marker}]{{#{ref_id}}}")
+            if linked:
+                return " ".join(linked)
+            return "[" + visible.strip("[]") + "]" if visible else ""
         if element.get("type") == "foot" and target in state.footnotes:
             number = state.used_footnotes.setdefault(target, len(state.used_footnotes) + 1)
             return f"[^{number}]"
@@ -213,6 +221,8 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
         return "\n\n" + "\n".join(lines) + "\n\n" if lines else ""
 
     if tag == "note":
+        if element.get("place") == "foot" and element.get(f"{{{XML}}}id") in state.footnotes:
+            return ""
         content = _clean_text(_render_children(element, state, depth))
         return f"\n\n> {content}\n\n" if content else ""
 
@@ -250,21 +260,36 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
     body_markdown = "" if body is None else _render_children(body, state, 0)
     if not _clean_text(body_markdown):
         raise ValueError("Canonical TEI body rendered to empty Markdown")
+    if profile == "full_body":
+        chunks.append("\n\n## Body\n\n")
     chunks.append(body_markdown)
+
+    if profile == "full_body":
+        back = root.find(f"{{{TEI}}}text/{{{TEI}}}back")
+        if back is not None:
+            for child in back:
+                if isinstance(child.tag, str) and etree.QName(child.tag).localname != "listBibl":
+                    chunks.append(_render_element(child, state, 0))
+        for footnote_id in state.footnotes:
+            state.used_footnotes.setdefault(footnote_id, len(state.used_footnotes) + 1)
 
     if state.used_footnotes:
         chunks.append("\n\n---\n\n## Footnotes\n\n")
         for footnote_id, number in sorted(state.used_footnotes.items(), key=lambda item: item[1]):
             chunks.append(f"[^{number}]: {state.footnotes[footnote_id]}\n\n")
 
-    if state.cited_refs:
+    reference_ids = set(state.references) if profile == "full_body" else state.cited_refs
+    if reference_ids:
         chunks.append("\n\n---\n\n## References\n\n")
-        for ref_id in sorted(state.cited_refs):
+        for ref_id in state.references:
+            if ref_id not in reference_ids:
+                continue
             ref = state.references[ref_id]
             authors_text = ", ".join(ref["authors"]) or "Unknown"
             doi = f" DOI: https://doi.org/{ref['doi']}" if ref["doi"] else ""
             url = f" URL: {ref['url']}" if ref["url"] else ""
-            chunks.append(f"- **[{ref['label']}]** {authors_text} ({ref['year']}). {ref['title']}.{doi}{url}\n\n")
+            reference_text = ref["raw"] if profile == "full_body" else f"{authors_text} ({ref['year']}). {ref['title']}."
+            chunks.append(f"- **[{ref['label']}]** {{#{ref_id}}} {reference_text}{doi}{url}\n\n")
 
     markdown = "".join(chunks).replace("\r\n", "\n")
     markdown = re.sub(r"\n{4,}", "\n\n\n", markdown).strip() + "\n"
@@ -279,7 +304,7 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
         "tables": state.tables,
         "body_characters": body_characters,
         "rendered_characters": len(markdown),
-        "references": len(state.cited_refs),
+        "references": len(reference_ids),
     }
     if profile == "pruned":
         state.warnings.append("Pruned profile omits sections and is not canonical for evaluation")

@@ -1,0 +1,5 @@
+# Preserve the bytes covered by experiment checksums on every platform.
+/*.csv -text whitespace=cr-at-eol
+/*.json -text whitespace=cr-at-eol
+results/*-narrowed/*.csv -text whitespace=cr-at-eol
+results/*-narrowed/*.json -text whitespace=cr-at-eol

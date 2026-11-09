@@ -7,8 +7,10 @@ DataSight exposes a versioned FastAPI API under `/api/v1`. Interactive OpenAPI d
 ```powershell
 docker compose up -d postgres redis grobid
 docker compose run --rm migrate
-docker compose up api worker
+docker compose up api worker llm-worker
 ```
+
+The `llm-worker` processes the LLM extraction queue.
 
 Host development:
 
@@ -134,6 +136,25 @@ extract_features
 match_um_dataset
 export_insights
 ```
+
+## LLM extraction and resume
+
+`extract_features` uses the selected publication set of an existing run. For
+standalone extraction/resume, use the run endpoint rather than creating a new
+single-stage run without selected publications:
+
+```text
+GET  /api/v1/llm/status
+GET  /api/v1/runs/{run_id}/extractions?offset=0&limit=50
+GET  /api/v1/runs/{run_id}/extractions/{extraction_id}
+POST /api/v1/runs/{run_id}/extractions/resume
+```
+
+Outcomes distinguish pending, running, successful (including zero datasets),
+failed and interrupted extraction. Resume returns 202 when queued, 409 for active
+execution or changed extraction configuration, and 404 for missing runs.
+Credentials stay on the backend. See [LLM extraction](../backend/LLM_EXTRACTION.md)
+for setup, the evidence schema, source snapshots and evaluation exports.
 
 ## Import UM Dataset Metadata
 

@@ -25,6 +25,8 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_always_eager=CELERY_TASK_ALWAYS_EAGER,
     task_routes={
+        "datasight.extract_features": {"queue": "llm"},
+        "datasight.resume_extractions": {"queue": "llm"},
         "datasight.bootstrap_high_throughput_run": {"queue": "processing"},
         "datasight.dispatch_high_throughput_run": {"queue": "processing"},
         "datasight.process_high_throughput_stage": {"queue": "processing"},

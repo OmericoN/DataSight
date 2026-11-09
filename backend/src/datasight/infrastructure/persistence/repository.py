@@ -6,6 +6,7 @@ from datasight.infrastructure.persistence.artifacts import ArtifactRepositoryMix
 from datasight.infrastructure.persistence.base import PipelineRepositoryBase
 from datasight.infrastructure.persistence.discovery import DiscoveryRepositoryMixin
 from datasight.infrastructure.persistence.evaluation import EvaluationRepositoryMixin
+from datasight.infrastructure.persistence.extractions import ExtractionRepositoryMixin
 from datasight.infrastructure.persistence.insights import InsightRepositoryMixin
 from datasight.infrastructure.persistence.items import PipelineItemRepositoryMixin
 from datasight.infrastructure.persistence.mentions import MentionRepositoryMixin
@@ -15,6 +16,7 @@ from datasight.infrastructure.persistence.um_datasets import UMDatasetRepository
 
 
 class PipelineRepository(
+    ExtractionRepositoryMixin,
     RunRepositoryMixin,
     DiscoveryRepositoryMixin,
     PipelineItemRepositoryMixin,

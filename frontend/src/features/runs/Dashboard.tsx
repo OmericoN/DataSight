@@ -4,6 +4,7 @@ import {
   RiArrowRightLine,
   RiCheckLine,
   RiClipboardLine,
+  RiCpuLine,
   RiDatabase2Line,
   RiDeleteBinLine,
   RiDownload2Line,
@@ -122,12 +123,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import maastrichtBanner from "@/assets/maastricht-university-seeklogo.png";
 import { LaunchJobProvider, useLaunchJob } from "@/features/discovery/LaunchJobProvider";
+import { InsightSummaryList } from "@/features/runs/InsightSummaryList";
 import { cn } from "@/lib/utils";
 import {
   ApiError,
   api,
   isActiveRun,
   type HealthResponse,
+  type LlmStatus,
   type PipelineRunEvent,
   type PipelineRunSummary,
   type ResetResponse,
@@ -137,7 +140,9 @@ import {
   activeStageCount,
   activeParallelStages,
   edgeToneFromSourceStatus,
+  formatStageElapsed,
   formatStageName,
+  hasLiveStageTimer,
   isTerminalStatus,
   isEnabledStage,
   isWorkingStatus,
@@ -153,6 +158,7 @@ import {
 } from "./pipeline";
 
 const DiscoveryLaunchPage = lazy(() => import("@/features/discovery/DiscoveryLaunchPage"));
+const ExtractionPanel = lazy(() => import("./ExtractionPanel").then(module => ({ default: module.ExtractionPanel })));
 const UMDatasetsPage = lazy(() => import("@/features/datasets/UMDatasetsPage"));
 
 const RESET_CONFIRMATION = "RESET DATASIGHT";
@@ -327,6 +333,12 @@ function PipelineShell() {
     queryFn: api.health,
     refetchInterval: 5000,
   });
+  const llmQuery = useQuery({
+    queryKey: ["llm-status"],
+    queryFn: api.llmStatus,
+    refetchInterval: 10000,
+    retry: false,
+  });
   const runsQuery = useQuery({
     queryKey: ["runs"],
     queryFn: () => api.runs(25),
@@ -340,6 +352,7 @@ function PipelineShell() {
 
   function refreshAll() {
     void queryClient.invalidateQueries({ queryKey: ["health"] });
+    void queryClient.invalidateQueries({ queryKey: ["llm-status"] });
     void queryClient.invalidateQueries({ queryKey: ["stages"] });
     void queryClient.invalidateQueries({ queryKey: ["runs"] });
     void queryClient.invalidateQueries({ queryKey: ["run"] });
@@ -435,6 +448,8 @@ function PipelineShell() {
               <HealthList
                 health={healthQuery.data}
                 isLoading={healthQuery.isLoading}
+                llmStatus={llmQuery.isError ? undefined : llmQuery.data}
+                llmLoading={llmQuery.isLoading}
                 compact
               />
             </SidebarGroupContent>
@@ -481,6 +496,8 @@ function PipelineShell() {
           <HealthPills
             health={healthQuery.data}
             isLoading={healthQuery.isLoading}
+            llmStatus={llmQuery.isError ? undefined : llmQuery.data}
+            llmLoading={llmQuery.isLoading}
           />
           <Button
             type="button"
@@ -726,7 +743,7 @@ function RunResultsPage() {
             </div>
             <CardTitle className="truncate text-base">{run?.query || `Run ${numericRunId}`} results</CardTitle>
             <CardDescription className="text-xs">
-              Selected papers and their extracted insights; empty insight fields mean no mention was detected.
+              Selected papers and their extracted insights; extraction outcomes distinguish missing evidence from unfinished or failed processing.
             </CardDescription>
           </div>
           {run ? <StatusBadge status={run.status} /> : null}
@@ -752,16 +769,17 @@ function RunResultsPage() {
               {candidatesQuery.data ? <ResultPagination offset={candidateOffset} pageSize={RUN_RESULT_PAGE_SIZE} shown={candidatesQuery.data.rows.length} total={candidatesQuery.data.total} loading={candidatesQuery.isFetching} onOffset={setCandidateOffset} /> : null}
             </TabsContent>
             <TabsContent value="insights" className="mt-0 min-w-0">
-              <p className="border-b px-3 py-2 text-xs text-muted-foreground">Detailed mention rows for this run; select a row to inspect every insight field.</p>
+              <p className="border-b px-4 py-2 text-xs text-muted-foreground">Extracted dataset facts for this run. View details for every field and its evidence.</p>
               {insightsQuery.isLoading ? <TableSkeleton /> : null}
               {insightsQuery.isError ? <InlineQueryError title="Insights could not be loaded" error={insightsQuery.error} /> : null}
               {!insightsQuery.isLoading && !insightsQuery.isError && !insightsQuery.data?.rows.length ? <EmptyState icon={RiFileList3Line} title="No insight rows" description="No selected candidates are available for this run." /> : null}
-              {insightsQuery.data?.rows.length ? <RunInsightsResultTable rows={insightsQuery.data.rows} onSelect={setSelectedInsight} /> : null}
+              {insightsQuery.data?.rows.length ? <InsightSummaryList rows={insightsQuery.data.rows} onSelect={setSelectedInsight} /> : null}
               {insightsQuery.data ? <ResultPagination offset={insightOffset} pageSize={RUN_RESULT_PAGE_SIZE} shown={insightsQuery.data.rows.length} total={insightsQuery.data.total} loading={insightsQuery.isFetching} onOffset={setInsightOffset} /> : null}
             </TabsContent>
           </Tabs>
         </CardContent>
       </Card>
+      {run ? <Suspense fallback={<p role="status" className="p-4 text-sm">Loading extraction outcomes…</p>}><ExtractionPanel key={run.id} run={run} /></Suspense> : null}
       <RunResultsDownloadSheet
         open={downloadOpen}
         kind={downloadKind}
@@ -794,11 +812,6 @@ function RunCandidatesResultTable({ rows }: { rows: Record<string, unknown>[] })
       </Table>
     </div>
   );
-}
-
-function RunInsightsResultTable({ rows, onSelect }: { rows: Record<string, unknown>[]; onSelect: (row: Record<string, unknown>) => void }) {
-  const visibleColumns = ["dataset_name", "dataset_role", "match_status", "match_score", "um_dataset_title"];
-  return <div className="max-w-full overflow-x-auto"><Table className="min-w-[1100px]"><TableHeader className="sticky top-0 z-10 bg-card"><TableRow><TableHead className="min-w-[340px]">Paper</TableHead><TableHead>Discovery method</TableHead>{visibleColumns.map((column) => <TableHead key={column}>{insightColumnLabel(column)}</TableHead>)}</TableRow></TableHeader><TableBody>{rows.map((row, index) => <TableRow key={`${String(row.paper_id)}-${String(row.dataset_name)}-${index}`} className="cursor-pointer" onClick={() => onSelect(row)}><PaperResultCell row={row} /><TableCell><DiscoveryMethodBadge value={row.discovery_method} /></TableCell>{visibleColumns.map((column) => <TableCell key={column} className="max-w-[260px] truncate" title={formatInsightCell(column, row[column])}>{formatInsightCell(column, row[column])}</TableCell>)}</TableRow>)}</TableBody></Table></div>;
 }
 
 function PaperResultCell({ row }: { row: Record<string, unknown> }) {
@@ -860,7 +873,7 @@ function WorkspacePage() {
     queryFn: () => api.run(numericRunId),
     enabled: Number.isFinite(numericRunId),
     refetchInterval: (query) =>
-      isActiveRun(query.state.data?.status) ? 2500 : false,
+      isActiveRun(query.state.data?.status) ? 1000 : false,
   });
   const eventsQuery = useQuery({
     queryKey: ["run-events", numericRunId],
@@ -944,6 +957,7 @@ function WorkspacePage() {
       <div className="grid min-h-[620px] min-w-0 flex-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(420px,460px)]">
         <PipelineGraph
           stages={visualStages}
+          runActive={isActiveRun(selectedRun?.status)}
           selectedStageName={selectedStage?.name ?? null}
           onSelectStage={inspectStage}
         />
@@ -1021,11 +1035,11 @@ function InsightsPage() {
   return (
     <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-5">
       <Card className="min-w-0">
-        <CardHeader>
-          <CardTitle>Insights</CardTitle>
-          <CardDescription>
-            Preview the latest exported joined insight rows.
-          </CardDescription>
+        <CardHeader className="!flex flex-wrap items-start justify-between gap-3 px-4 sm:px-6">
+          <div className="min-w-0 flex-1 basis-48">
+            <CardTitle>Insights</CardTitle>
+            <CardDescription>Browse extracted dataset facts across publications.</CardDescription>
+          </div>
           <CardAction>
             <div className="flex items-center gap-2">
               <Button
@@ -1048,62 +1062,20 @@ function InsightsPage() {
             </div>
           </CardAction>
         </CardHeader>
-        <CardContent className="min-w-0 overflow-hidden">
+        <CardContent className="min-w-0 overflow-hidden px-0">
           {insightsQuery.isLoading ? <TableSkeleton /> : null}
-          {!insightsQuery.isLoading && !rows.length ? (
+          {insightsQuery.isError ? <InlineQueryError title="Insights could not be loaded" error={insightsQuery.error} /> : null}
+          {!insightsQuery.isLoading && !insightsQuery.isError && !rows.length ? (
             <EmptyState
               icon={RiFileList3Line}
               title="No insights yet"
               description="Run the pipeline to export joined insight rows."
             />
           ) : null}
-          {rows.length ? (
-            <>
-              <Table className="min-w-max">
-                <TableHeader>
-                  <TableRow>
-                    {columns.map((column) => (
-                      <TableHead key={column}>
-                        {insightColumnLabel(column)}
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.slice(0, 25).map((row, index) => (
-                    <TableRow key={index}>
-                      {columns.map((column) => (
-                        <TableCell key={column} className="max-w-[300px]">
-                          <button
-                            type="button"
-                            className="block w-full truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                            title={formatInsightCell(column, row[column])}
-                            aria-label={
-                              column === "discovery_mode"
-                                ? `Discovery strategy: ${formatInsightCell(column, row[column])}`
-                                : undefined
-                            }
-                            onClick={() => setSelectedInsightIndex(index)}
-                          >
-                            {column === "discovery_mode" ? (
-                              <Badge variant="secondary">
-                                {formatInsightCell(column, row[column])}
-                              </Badge>
-                            ) : (
-                              formatInsightCell(column, row[column])
-                            )}
-                          </button>
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <p className="mt-3 text-xs text-muted-foreground">
-                Select any cell to inspect the full insight row.
-              </p>
-            </>
-          ) : null}
+          {rows.length ? <>
+            <InsightSummaryList rows={rows.slice(0, 25)} onSelect={(row) => setSelectedInsightIndex(rows.indexOf(row))} />
+            {rows.length > 25 ? <p className="px-4 pt-3 text-xs text-muted-foreground">Showing 25 of {rows.length} loaded insights. Download CSV for every row.</p> : null}
+          </> : null}
         </CardContent>
       </Card>
       <Sheet open={downloadOpen} onOpenChange={setDownloadOpen}>
@@ -1197,11 +1169,10 @@ function InsightsPage() {
         >
           <SheetHeader className="shrink-0">
             <SheetTitle>
-              Insight row{" "}
-              {selectedInsightIndex === null ? "" : selectedInsightIndex + 1}
+              {typeof selectedInsight?.dataset_name === "string" ? selectedInsight.dataset_name : "Insight details"}
             </SheetTitle>
             <SheetDescription>
-              Complete field values for the selected exported insight.
+              Complete field values and evidence for this dataset insight.
             </SheetDescription>
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1 overflow-hidden px-4 pb-4">
@@ -1580,13 +1551,25 @@ function pipelineEdgesForNodes(nodes: GraphNode[]) {
 
 function PipelineGraph({
   stages,
+  runActive,
   selectedStageName,
   onSelectStage,
 }: {
   stages: VisualStage[];
+  runActive: boolean;
   selectedStageName: string | null;
   onSelectStage: (stageName: string) => void;
 }) {
+  const hasLiveTimer = runActive && stages.some(hasLiveStageTimer);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!hasLiveTimer) return;
+
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [hasLiveTimer]);
+
   if (!stages.length) {
     return (
       <EmptyState
@@ -1696,6 +1679,7 @@ function PipelineGraph({
           <PipelineNode
             key={node.stage.name}
             node={node}
+            elapsed={formatStageElapsed(node.stage, runActive ? now : undefined)}
             selected={selectedStageName === node.stage.name}
             onSelect={() => onSelectStage(node.stage.name)}
           />
@@ -1707,10 +1691,12 @@ function PipelineGraph({
 
 function PipelineNode({
   node,
+  elapsed,
   selected,
   onSelect,
 }: {
   node: GraphNode;
+  elapsed: string | null;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -1721,14 +1707,22 @@ function PipelineNode({
   return (
     <button
       type="button"
-      className={cn("pipeline-node", selected && "pipeline-node-selected")}
+      className={cn("pipeline-node pt-7", selected && "pipeline-node-selected")}
       style={{ left: node.x, top: node.y }}
       data-status-tone={tone}
       data-disabled={!enabled ? "true" : undefined}
       data-working={node.stage.working ? "true" : undefined}
       aria-label={`Inspect ${titleCase(formatStageName(node.stage.name))} status and filter events`}
+      aria-description={elapsed ? `Elapsed time: ${elapsed}` : "Elapsed time unavailable"}
       onClick={onSelect}
     >
+      <span
+        aria-hidden="true"
+        className="absolute top-2 right-3 inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10px] leading-none text-muted-foreground tabular-nums"
+      >
+        <RiTimeLine className="size-3" />
+        {elapsed ?? "—"}
+      </span>
       <span className="pipeline-node-icon">
         <Icon />
       </span>
@@ -1938,13 +1932,17 @@ function MetricsPanel({ metrics }: { metrics: Record<string, unknown> }) {
 function HealthList({
   health,
   isLoading,
+  llmStatus,
+  llmLoading,
   compact = false,
 }: {
   health: HealthResponse | undefined;
   isLoading: boolean;
+  llmStatus: LlmStatus | undefined;
+  llmLoading: boolean;
   compact?: boolean;
 }) {
-  const checks = healthChecks(health);
+  const checks = healthChecks(health, isLoading, llmStatus, llmLoading);
   return (
     <div
       className={cn(
@@ -1957,18 +1955,14 @@ function HealthList({
         return (
           <div
             key={check.label}
+            title={"message" in check ? check.message : undefined}
             className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm"
           >
             <span className="flex min-w-0 items-center gap-2">
               <Icon />
               <span className="truncate">{check.label}</span>
             </span>
-            <StatusBadge
-              status={
-                isLoading ? "checking" : check.ready ? "ready" : "offline"
-              }
-              passive
-            />
+            <StatusBadge status={check.status} passive />
           </div>
         );
       })}
@@ -1979,11 +1973,15 @@ function HealthList({
 function HealthPills({
   health,
   isLoading,
+  llmStatus,
+  llmLoading,
 }: {
   health: HealthResponse | undefined;
   isLoading: boolean;
+  llmStatus: LlmStatus | undefined;
+  llmLoading: boolean;
 }) {
-  const checks = healthChecks(health);
+  const checks = healthChecks(health, isLoading, llmStatus, llmLoading);
   const ready = checks.filter((check) => check.ready).length;
   return (
     <div className="hidden items-center gap-2 lg:flex">
@@ -1991,7 +1989,7 @@ function HealthPills({
         variant="outline"
         className="system-status-badge pointer-events-none"
       >
-        {isLoading ? "Checking" : `${ready}/${checks.length} ready`}
+        {isLoading || llmLoading ? "Checking" : `${ready}/${checks.length} ready`}
       </Badge>
     </div>
   );
@@ -2128,8 +2126,13 @@ function useTheme() {
   return [theme, setThemeState] as const;
 }
 
-function healthChecks(health: HealthResponse | undefined) {
-  return [
+function healthChecks(
+  health: HealthResponse | undefined,
+  isLoading: boolean,
+  llmStatus: LlmStatus | undefined,
+  llmLoading: boolean,
+) {
+  const checks = [
     {
       label: "Database",
       ready: Boolean(health?.database_ready),
@@ -2145,6 +2148,25 @@ function healthChecks(health: HealthResponse | undefined) {
       label: "GROBID",
       ready: Boolean(health?.grobid_ready),
       icon: RiFileTextLine,
+    },
+  ];
+  const llmReady = Boolean(llmStatus?.available);
+  let llmState = "offline";
+  if (llmReady) llmState = "ready";
+  else if (llmStatus && !llmStatus.configured) llmState = "not configured";
+  else if (llmStatus) llmState = "unavailable";
+
+  return [
+    ...checks.map((check) => ({
+      ...check,
+      status: isLoading ? "checking" : check.ready ? "ready" : "offline",
+    })),
+    {
+      label: "GPU (LLM)",
+      ready: llmReady,
+      icon: RiCpuLine,
+      status: llmLoading ? "checking" : llmState,
+      message: llmStatus?.message ?? "LLM status could not be checked.",
     },
   ];
 }

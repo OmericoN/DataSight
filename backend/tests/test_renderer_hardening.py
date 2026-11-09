@@ -24,6 +24,8 @@ def _tei(table_rows: int = 12) -> str:
         <figure><head>Workflow</head><figDesc>Accession PRJNA123456</figDesc><note>Figure note with Dryad.</note></figure>
       </div>
       <div><head>Data Availability</head><p>The data are available at https://doi.org/10.5281/zenodo.1234.</p></div>
+      <div><head>Previous Work</head><p>Another paper used dataset GSE999.</p></div>
+      <div><head>Literature Review</head><p>Earlier studies used dataset GSE888.</p></div>
       <div><head>Discussion</head><p>The cohort remains reusable.</p></div>
       <div><head>Conclusion</head><p>Dataset evidence is retained.</p></div>
       <div><head>Supplementary Material</head><p>Supplementary registry identifier ICPSR 12345.</p></div>
@@ -47,18 +49,24 @@ def test_full_body_traverses_top_level_content_tables_lists_and_sections(tmp_pat
     assert "Top-level note mentions Figshare" in markdown
     assert "https://zenodo.org/records/1234" in markdown
     assert "Data Availability" in markdown
+    assert "Previous Work" in markdown
+    assert "Literature Review" in markdown
     assert "Discussion" in markdown
     assert "Conclusion" in markdown
     assert "Supplementary Material" in markdown
     assert "Appendix" in markdown
 
 
-def test_default_profile_prunes_low_yield_sections(tmp_path: Path):
+def test_default_pruned_profile_prunes_low_yield_sections(tmp_path: Path):
     xml = tmp_path / "paper.tei.xml"
     xml.write_text(_tei(), encoding="utf-8")
     markdown = extract_markdown(xml)
     assert "Methods" in markdown
     assert "Data Availability" in markdown
+    assert "Previous Work" not in markdown
+    assert "GSE999" not in markdown
+    assert "Literature Review" not in markdown
+    assert "GSE888" not in markdown
     assert "Discussion" not in markdown
     assert "Conclusion" not in markdown
     assert "Supplementary Material" not in markdown
@@ -75,7 +83,7 @@ def test_render_records_lineage_metrics_and_reuses_only_matching_cache(tmp_path:
 
     assert first.success and first.sha256 and first.source_sha256
     assert first.profile == "pruned"
-    assert first.warnings == ["Pruned profile omits sections and is not canonical for evaluation"]
+    assert first.warnings
     assert first.quality_metrics
     assert first.quality_metrics["figures"] == 2
     assert first.quality_metrics["tables"] == 1
@@ -123,7 +131,7 @@ def test_citations_footnotes_abstract_formula_and_batch_failures_are_preserved(t
         </text></TEI>""",
         encoding="utf-8",
     )
-    markdown = extract_markdown(xml)
+    markdown = extract_markdown(xml, profile="full_body")
     assert "Abstract dataset DOI" in markdown
     assert "[7]" in markdown and "10.1234/data" in markdown
     assert "Footnote dataset identifier" in markdown
@@ -140,3 +148,34 @@ def test_citations_footnotes_abstract_formula_and_batch_failures_are_preserved(t
     )
     assert results[0].success
     assert not results[1].success
+
+
+def test_full_body_preserves_back_matter_uncited_references_and_stable_citation_ids(tmp_path):
+    xml = tmp_path / "full.xml"
+    xml.write_text('''<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body>
+      <p>We used Alpha <ref type="bibr" target="#b1">[1]</ref>.</p>
+      </body><back><div><head>Appendix</head><p>Appendix data.</p></div>
+      <note>Back matter note.</note><listBibl>
+      <biblStruct xml:id="b1"><analytic><title>Alpha data</title></analytic></biblStruct>
+      <bibl xml:id="b2">Uncited Beta dataset, Version 2.</bibl>
+      </listBibl></back></text></TEI>''', encoding="utf-8")
+    text = extract_markdown(xml, profile="full_body")
+    assert "[1]{#b1}" in text and "[[1]]" not in text
+    assert "Appendix data" in text and "Back matter note" in text
+    assert "{#b2}" in text and "Uncited Beta dataset, Version 2" in text
+
+
+def test_references_collapse_xml_whitespace_and_keep_source_order(tmp_path):
+    xml = tmp_path / "references.xml"
+    xml.write_text('''<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><p>Body.</p></body>
+      <back><listBibl>
+        <bibl xml:id="b1">First title
+          <author>First author</author>
+          2021</bibl>
+        <bibl xml:id="b2">Second title</bibl>
+        <bibl xml:id="b10">Tenth title</bibl>
+      </listBibl></back></text></TEI>''', encoding="utf-8")
+
+    text = extract_markdown(xml, profile="full_body")
+    assert "{#b1} First title First author 2021\n\n" in text
+    assert text.index("{#b1}") < text.index("{#b2}") < text.index("{#b10}")

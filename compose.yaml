@@ -61,6 +61,13 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       GROBID_BASE_URL: http://grobid:8070
       OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3.8-27B}
+      LLM_MODEL_REVISION: ${LLM_MODEL_REVISION:-1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0}
+      LLM_TIMEOUT_SEC: ${LLM_TIMEOUT_SEC:-195}
+      LLM_EXTRACTION_STRATEGY: ${LLM_EXTRACTION_STRATEGY:-bounded}
+      LLM_INFERENCE_CONCURRENCY: ${LLM_INFERENCE_CONCURRENCY:-4}
       UV_PROJECT_ENVIRONMENT: /opt/datasight-venv
     volumes:
       - .:/app
@@ -112,7 +119,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  worker:
+  worker: &pipeline_worker
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -133,6 +140,14 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  llm-worker:
+    <<: *pipeline_worker
+    command: ["uv", "run", "celery", "-A", "datasight.infrastructure.worker.celery_app:celery_app", "worker", "--loglevel=INFO", "--pool=prefork", "--concurrency=${LLM_WORKER_CONCURRENCY:-1}", "-Q", "llm"]
+    volumes:
+      - .:/app
+      - datasight_uv_cache:/root/.cache/uv
+      - datasight_llm_venv:/opt/datasight-venv
+
 volumes:
   datasight_pgvector_data:
     name: datasight_pgvector_data
@@ -140,3 +155,5 @@ volumes:
     name: datasight_uv_cache
   datasight_venv:
     name: datasight_venv
+  datasight_llm_venv:
+    name: datasight_llm_venv

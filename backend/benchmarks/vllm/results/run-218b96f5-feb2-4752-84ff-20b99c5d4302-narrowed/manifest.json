@@ -1,0 +1,94 @@
+{
+  "code_files_sha256": {
+    "backend/src/datasight/application/bounded_extraction.py": "c8c40a25439701dabb8699f7fa5767aa168dda3004c4b8254e4facd46fe3dd40",
+    "backend/src/datasight/application/extraction_engine.py": "da9a549b0de1aa9cf5a19afb7eb3dbc9132586d7d3a050c5129654a4eb6fe0c0",
+    "backend/src/datasight/application/high_throughput.py": "9f920a6cac56fe2d4fa0670e518bc0a3fd9361d6a0a0e690ae02d97c733e42e2",
+    "backend/src/datasight/application/llm_extraction.py": "6cf16b7c7c143562cf7f018692b62c63d460dbce2eafe6ce78c43bf8bf05f5d2",
+    "backend/src/datasight/application/pipeline_services.py": "78a459e9ed550ca1d3a4cbdd3755dc4a256467a51c81cf7ab16337a969c416ae",
+    "backend/src/datasight/domain/extraction.py": "1a7822f9c1ed6955e95b8e1853a16e9a0e9ee26885443a17d35db3308fb6b981",
+    "backend/src/datasight/infrastructure/llm/client.py": "ade57240cbda923a39dc8829ce935fb087209320d41b03fe2133baa82dbda938",
+    "backend/src/datasight/infrastructure/persistence/extractions.py": "b75113b5376e422f756f9ed1378c8214176735ea29f703551287ff40ad4a86f1",
+    "backend/src/datasight/infrastructure/persistence/items.py": "49bf729903b151a3e68b5f1d09905891ed39a84db14908a34e653bb2e9a8c36f",
+    "backend/src/datasight/infrastructure/worker/celery_app.py": "ae4a8b73aec6f6b49a38c0ebf6255d0282562069fff14a7288547d4b16fe080e",
+    "backend/src/datasight/infrastructure/worker/tasks.py": "faa7f41c5f83862d740264fd2433ffa0ce4d20cddc3265f3de7840acf3698c68",
+    "compose.yaml": "b16d5fa0881ff8c07bee639ad2920c306ce5a1b302c589547b0776bb43178b59"
+  },
+  "code_revision": "34bc4d6530c2da955cd30b30c9b755fe79ce903d",
+  "container_image_digest": "sha256:696d375800974384d1663c64d20bb1dfef4006a61657c6a0afceb4156eb6c716",
+  "dirty": true,
+  "extraction_configurations": {
+    "W4308573601": {
+      "chunk_characters": 6000,
+      "context_tokens": 16384,
+      "enable_thinking": false,
+      "feature_batching": "sparse_groups_occurrences8_v2",
+      "llm_model": "Qwen/Qwen3.8-27B",
+      "long_attempts": 100,
+      "long_reference_occurrences": 30,
+      "long_seconds": 900,
+      "long_source_characters": 60000,
+      "max_prompt_characters": 20000,
+      "max_tokens": 2048,
+      "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "occurrence_batch_size": 8,
+      "ordinary_attempts": 50,
+      "ordinary_seconds": 300,
+      "overlap_characters": 300,
+      "prompt_version": "indexed-sparse-v13",
+      "render_profile": "full_body",
+      "renderer_version": "tei-renderer-v4",
+      "schema_version": "dataset-evidence-v1",
+      "temperature": 0,
+      "template_reserve_tokens": 1024
+    }
+  },
+  "files_sha256": {
+    "execution.json": "242b324dc78abd1d117738965e0b9798c10de8d06072f45858205d3b1f558616",
+    "paper_metrics.csv": "ee42e10a47e82a6f406d92d7c67035c57fe0526181eea2770dcc1ccc46b6ab9b",
+    "request_attempts.csv": "793ad593e0071c9dd6daf7c16661566208775eda934d269117c936ee83a08a56",
+    "run_metrics.csv": "e1e93a77a31c7d6a3c9d8e1069d99b44918a8ed0ee2ddf00117395dba1d486d9"
+  },
+  "finished_utc": "2026-11-02T21:22:48.385642+00:00",
+  "gpu": "NVIDIA H100 PCIe 81559 MiB",
+  "mode": "benchmark",
+  "model": "Qwen/Qwen3.8-27B",
+  "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "raw_exports": {
+    "extractions.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-218b96f5-feb2-4752-84ff-20b99c5d4302\\extractions.csv",
+      "sha256": "f30b57a97e2ed0ca885c28f657ee2ae5533066dbe565ccc737abd3115d559ad1"
+    },
+    "extractions.json": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-218b96f5-feb2-4752-84ff-20b99c5d4302\\extractions.json",
+      "sha256": "09e701909133cf5caccdcfdea1e65a7d92f166b7080752f27246059aeb679158"
+    },
+    "papers.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-218b96f5-feb2-4752-84ff-20b99c5d4302\\papers.csv",
+      "sha256": "48d6441be290fda7c04c719c25536f4ff3633fdaa52b097908c7ad0da9e526b3"
+    },
+    "replay.json": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-218b96f5-feb2-4752-84ff-20b99c5d4302\\replay.json",
+      "sha256": "456e70eea86fb878b46e5296fb19eac0520b1b6b1e1f6b776998072a6a292b80"
+    },
+    "request_attempts.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-218b96f5-feb2-4752-84ff-20b99c5d4302\\request_attempts.csv",
+      "sha256": "1926f838402f6fd4154e6f8a06f8cb86cdd4a74ed9d8ba89dd5f52207e49dfbd"
+    }
+  },
+  "run_id": 15,
+  "run_key": "run-218b96f5-feb2-4752-84ff-20b99c5d4302",
+  "serving_settings": {
+    "chunked_prefill": true,
+    "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.9,
+    "max_model_len": 16384,
+    "max_num_seqs": 1,
+    "prefix_caching": true,
+    "tensor_parallel_size": 1
+  },
+  "source_hashes": {
+    "W4308573601": "443280854dcea329a5ea013c1761863b6529e7493031c2b6ebc64c90097609f0"
+  },
+  "started_utc": "2026-11-02T21:07:50.255816+00:00",
+  "vllm_version": "0.32.0"
+}

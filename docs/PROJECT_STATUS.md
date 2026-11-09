@@ -1,5 +1,14 @@
 # DataSight Project Status
 
+Update, 2026-10-28: whole-publication LLM extraction is implemented with a typed
+evidence schema, immutable snapshots, request checkpoints, manual resume,
+run-isolated results, API/CLI, exports and dashboard inspection. Backend tests,
+frontend tests/build and synthetic schema-constrained DSRI inference passed.
+Application migration/configuration and labeled-paper accuracy evaluation remain
+operational prerequisites; no application deployment was performed. See
+[LLM extraction](../backend/LLM_EXTRACTION.md). The dated assessment below is
+historical and describes the earlier rules baseline.
+
 Status date: 2026-08-04  
 Target: a demonstrably operating, reviewable pipeline by 2026-08-31.
 

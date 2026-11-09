@@ -9,4 +9,4 @@ def test_experiment_lineage_migration_is_the_single_head():
     config = Config(str(backend_root / "alembic.ini"))
     config.set_main_option("script_location", str(backend_root / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260824_0012"]
+    assert script.get_heads() == ["20261028_0013"]

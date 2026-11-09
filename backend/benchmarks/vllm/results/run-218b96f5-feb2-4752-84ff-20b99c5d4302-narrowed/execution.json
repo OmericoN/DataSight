@@ -1,0 +1,16 @@
+{
+  "run_id": 15,
+  "run_key": "run-218b96f5-feb2-4752-84ff-20b99c5d4302",
+  "source_run_key": "run-bf6ca9ab-957e-4be1-92dd-59ec1b1ce612",
+  "code_revision": "34bc4d6530c2da955cd30b30c9b755fe79ce903d",
+  "started_utc": "2026-11-02T21:07:50.255816+00:00",
+  "finished_utc": "2026-11-02T21:22:48.385642+00:00",
+  "code_files_sha256": {
+    "application/bounded_extraction.py": "c8c40a25439701dabb8699f7fa5767aa168dda3004c4b8254e4facd46fe3dd40",
+    "application/extraction_engine.py": "da9a549b0de1aa9cf5a19afb7eb3dbc9132586d7d3a050c5129654a4eb6fe0c0",
+    "application/llm_extraction.py": "6cf16b7c7c143562cf7f018692b62c63d460dbce2eafe6ce78c43bf8bf05f5d2",
+    "infrastructure/llm/client.py": "ade57240cbda923a39dc8829ce935fb087209320d41b03fe2133baa82dbda938"
+  },
+  "code_changed_during_run": false,
+  "provenance_note": "Application source committed and stable; unrelated documentation/QA files remain dirty."
+}

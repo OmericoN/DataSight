@@ -34,6 +34,15 @@ def _source_code_version() -> str:
 
 CODE_VERSION = os.getenv("DATASIGHT_CODE_VERSION") or _source_code_version()
 
+# LLM inference remains server-side; these values must never enter run configs.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3.8-27B")
+LLM_MODEL_REVISION = os.getenv("LLM_MODEL_REVISION", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0")
+LLM_TIMEOUT_SEC = float(os.getenv("LLM_TIMEOUT_SEC", "195"))
+LLM_INFERENCE_CONCURRENCY = max(1, int(os.getenv("LLM_INFERENCE_CONCURRENCY", "4")))
+EXTRACTIONS_DIR = PROJECT_ROOT / "storage" / "extractions"
+
 # ── OpenAlex ──────────────────────────────────────────────────────────────────
 OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "")
 OPENALEX_API_URL = os.getenv("OPENALEX_API_URL", "https://api.openalex.org")

@@ -1,0 +1,9 @@
+run_id,paper_id,source_sha256,status,dataset_count,attempts,prompt_tokens,completion_tokens,total_tokens,inference_seconds,p95_request_seconds,missing_usage_attempts,error_categories
+1,W4281658583,,failed,0,0,0,0,0,0,,0,source_preparation_or_upstream
+1,W4392850630,c05988cef2fed2f5628a8b8e3206aa3ecd6472858ad79c73b53964b1e30b86c8,failed,0,54,44783,13333,58116,426.486,24.225,0,invalid_completion
+1,W3160874952,,failed,0,0,0,0,0,0,,0,source_preparation_or_upstream
+1,W4282915171,edc0b19fa642e70f389db5f560ccd09a436600690a067c60588c84b5b26bdcd8,failed,0,33,29311,9445,38756,304.007,25.573,0,invalid_completion
+1,W4221072223,59f9ad4b3dd149dcc4b1e8471b38df2c455a12bc36e4a3f37b69aa9bebd4a37f,running,0,816,2235564,49589,2285153,2039.327,9.974,0,invalid_completion
+1,W4388625765,7b36b2700a14966b8b35e1e41feb723c0bffe44cc39a4ed952200e2f99d6a4c0,failed,0,77,109950,11095,121045,368.222,15.345,0,invalid_completion
+1,W3196577388,7fef28cbfb54c03f067d43317792c9e5dce16cb1f795b692050b8a83b992049a,failed,0,3,2748,657,3405,21.206,15.202,0,invalid_completion
+1,W4280514191,,failed,0,0,0,0,0,0,,0,source_preparation_or_upstream

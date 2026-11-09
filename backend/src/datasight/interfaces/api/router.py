@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from datasight.interfaces.api.routes import (
     admin,
     discovery,
+    extractions,
     health,
     imports,
     insights,
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/api/v1")
 router.include_router(health.router)
 router.include_router(stages.router)
 router.include_router(runs.router)
+router.include_router(extractions.router)
 router.include_router(discovery.router)
 router.include_router(insights.router)
 router.include_router(imports.router)

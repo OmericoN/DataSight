@@ -1,0 +1,15 @@
+{
+  "run_id": 8,
+  "run_key": "run-7b239918-8310-4833-a7f6-54a5b901470a",
+  "source_run_key": "run-bf6ca9ab-957e-4be1-92dd-59ec1b1ce612",
+  "started_utc": "2026-11-02T14:18:17.749585+00:00",
+  "finished_utc": "2026-11-02T14:18:53.511091+00:00",
+  "code_files_sha256": {
+    "application/bounded_extraction.py": "77bc9b46ca1bdedf9516874918541c39be2a3309ede425673043fc4cc24b98ec",
+    "application/extraction_engine.py": "da9a549b0de1aa9cf5a19afb7eb3dbc9132586d7d3a050c5129654a4eb6fe0c0",
+    "application/llm_extraction.py": "5e5820f84482561a30789406560ef8b15da3d9d82ce7dbe5ddc4184457c88b1d",
+    "infrastructure/llm/client.py": "e567caab751af9ab85b6df2c3043c11d452b5c561f4006fc714834628e0c87d7"
+  },
+  "code_changed_during_run": false,
+  "provenance_note": "Diagnostic only; dirty prototypes or operator stops are not release comparisons."
+}

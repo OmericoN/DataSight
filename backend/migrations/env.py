@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
 from datasight.config import POSTGRES_URI  # noqa: E402
 
 config = context.config
-config.set_main_option("sqlalchemy.url", POSTGRES_URI)
+config.set_main_option("sqlalchemy.url", POSTGRES_URI.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

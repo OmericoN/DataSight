@@ -1,0 +1,64 @@
+{
+  "code_files_sha256": {
+    "backend/src/datasight/application/extraction_engine.py": "2443a39747e457d3a596c51829f0e0f8d82b1fd703a1ffdb0db78d4c6e3cac1b",
+    "backend/src/datasight/application/high_throughput.py": "9f920a6cac56fe2d4fa0670e518bc0a3fd9361d6a0a0e690ae02d97c733e42e2",
+    "backend/src/datasight/application/llm_extraction.py": "5c72985894a596f134b495a8fdf925de8a6f1bcd74a50f9bfa7451d9834cddf1",
+    "backend/src/datasight/application/pipeline_services.py": "73c597debb0a5678f5d643786020f381c2a1e09253d9296351ec16aad78d29b6",
+    "backend/src/datasight/domain/extraction.py": "1a7822f9c1ed6955e95b8e1853a16e9a0e9ee26885443a17d35db3308fb6b981",
+    "backend/src/datasight/infrastructure/llm/client.py": "765dcce4757e5ddbd1a9f398171033c5cad2c56a689e32250c5fa25864beeca7",
+    "backend/src/datasight/infrastructure/persistence/extractions.py": "f1d2857dbe9cd87b183283d38b752548fc49dfeadf2ac90c63fe2ff6c4453c75",
+    "backend/src/datasight/infrastructure/persistence/items.py": "49bf729903b151a3e68b5f1d09905891ed39a84db14908a34e653bb2e9a8c36f",
+    "backend/src/datasight/infrastructure/worker/celery_app.py": "ae4a8b73aec6f6b49a38c0ebf6255d0282562069fff14a7288547d4b16fe080e",
+    "backend/src/datasight/infrastructure/worker/tasks.py": "faa7f41c5f83862d740264fd2433ffa0ce4d20cddc3265f3de7840acf3698c68",
+    "compose.yaml": "ed9f5d50c3037048083d5234503104b51a887d0e28ef6883ad6565a310601c67"
+  },
+  "code_revision": "4b97b01033f9fa2c010d35b406f61fc98bc02300",
+  "container_image_digest": "sha256:696d375800974384d1663c64d20bb1dfef4006a61657c6a0afceb4156eb6c716",
+  "dirty": true,
+  "files_sha256": {
+    "paper_metrics.csv": "07700d6bc98211e80ced4ebbfa5a01164421cd413a0b030ae82c35f13418919a",
+    "request_attempts.csv": "c5ac128e9a81a20805153f78dbb807ff4cfce6706c12514e9c786745789d8cbd",
+    "run_metrics.csv": "f86542b0813976444a45406cbc264a37b933fde467740e3bcef49de874258bae"
+  },
+  "finished_utc": null,
+  "gpu": "NVIDIA H100 PCIe 81559 MiB",
+  "mode": "diagnostic",
+  "model": "Qwen/Qwen3.8-27B",
+  "model_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "raw_exports": {
+    "extractions.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-1-final-20261102T1244Z\\extractions.csv",
+      "sha256": "410a339ed8a14f5ec543f175f2a6261d28f9978ae08768b6419e398d5025d763"
+    },
+    "papers.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-1-final-20261102T1244Z\\papers.csv",
+      "sha256": "fff89758be0eeac7f5c5d5ead8e9bdc4a087a5e771b23ecb9ec24e66c99ce8c2"
+    },
+    "request_attempts.csv": {
+      "path": "C:\\Users\\omern\\Documents\\Projects\\DataSight\\storage\\evaluation\\run-1-final-20261102T1244Z\\request_attempts.csv",
+      "sha256": "c5ac128e9a81a20805153f78dbb807ff4cfce6706c12514e9c786745789d8cbd"
+    }
+  },
+  "run_id": 1,
+  "serving_settings": {
+    "chunked_prefill": true,
+    "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.9,
+    "max_model_len": 16384,
+    "max_num_seqs": 1,
+    "prefix_caching": true,
+    "tensor_parallel_size": 1
+  },
+  "source_hashes": {
+    "W3160874952": "",
+    "W3196577388": "7fef28cbfb54c03f067d43317792c9e5dce16cb1f795b692050b8a83b992049a",
+    "W4221072223": "59f9ad4b3dd149dcc4b1e8471b38df2c455a12bc36e4a3f37b69aa9bebd4a37f",
+    "W4280514191": "",
+    "W4281658583": "",
+    "W4282915171": "edc0b19fa642e70f389db5f560ccd09a436600690a067c60588c84b5b26bdcd8",
+    "W4388625765": "7b36b2700a14966b8b35e1e41feb723c0bffe44cc39a4ed952200e2f99d6a4c0",
+    "W4392850630": "c05988cef2fed2f5628a8b8e3206aa3ecd6472858ad79c73b53964b1e30b86c8"
+  },
+  "started_utc": null,
+  "vllm_version": "0.32.0"
+}

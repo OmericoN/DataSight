@@ -1,0 +1,2 @@
+# Keep the pinned bytes on every platform and omit the generated vocabulary diff.
+tokenizer.json -text -diff

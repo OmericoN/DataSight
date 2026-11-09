@@ -96,13 +96,20 @@ def detect_mentions(
     return services.detect_mentions_batch(limit=limit, pipeline_run_id=pipeline_run_id)
 
 
-@celery_app.task(name="datasight.extract_features", bind=True)
+@celery_app.task(name="datasight.extract_features", bind=True, reject_on_worker_lost=True)
 def extract_features(
     self,
     limit: int | None = None,
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     return services.extract_features_from_candidates(limit=limit, pipeline_run_id=pipeline_run_id)
+
+
+@celery_app.task(name="datasight.resume_extractions", reject_on_worker_lost=True)
+def resume_extractions(pipeline_run_id: int) -> dict[str, Any]:
+    from datasight.application.llm_extraction import resume_extraction
+
+    return resume_extraction(pipeline_run_id)
 
 
 @celery_app.task(name="datasight.match_um_dataset", bind=True)

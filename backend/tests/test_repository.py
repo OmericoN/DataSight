@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -361,13 +362,13 @@ def test_selected_discovery_candidates_filter_before_count_and_pagination():
 
 def test_insight_rows_resolve_run_specific_discovery_provenance_without_duplicates():
     repo, cursor, _ = make_repo()
-    cursor.fetchall_results = [[{"paper_id": "W123", "discovery_mode": "random"}]]
+    cursor.fetchall_results = [[{"paper_id": "W123", "discovery_mode": "random", "dataset_name": "Alpha"}]]
 
     rows = repo.export_insight_rows(pipeline_run_id=9)
 
     query, params = cursor.executed[-1]
     assert rows[0]["discovery_mode"] == "random"
-    assert "JOIN discovery_candidates dc" in query
+    assert "FROM discovery_candidates dc" in query
     assert "COALESCE(dc.evidence_reasons" in query
     assert "dc.included" in query
     assert "dc.pipeline_ready" in query
@@ -436,7 +437,7 @@ def test_active_run_count_reads_running_statuses():
 
     assert repo.active_run_count() == 2
     query, _ = cursor.executed[-1]
-    assert "status IN ('queued', 'running', 'started')" in query
+    assert "status IN ('queued', 'running', 'started', 'interrupted')" in query
 
 
 def test_create_pipeline_run_records_creation_event():
@@ -468,6 +469,39 @@ def test_record_stage_result_records_stage_event():
     assert "INSERT INTO pipeline_run_events" in event_query
     assert event_params[:4] == (9, "discover", "info", "Discovered 3 publications.")
     assert conn.commits == 1
+
+
+def test_stage_start_is_committed_before_the_result_preserves_it():
+    repo, cursor, conn = make_repo()
+
+    repo.record_stage_start("download_pdf", 9)
+
+    insert_query, params = cursor.executed[1]
+    assert "statement_timestamp(), NULL" in insert_query
+    assert params[:3] == (9, "download_pdf", "running")
+    assert cursor.executed[-1][1][3] == "download_pdf started."
+    assert conn.commits == 1
+
+    cursor.fetchone_results = [{"id": 10}]
+    repo.record_stage_result("download_pdf", "successful", pipeline_run_id=9)
+
+    finish_query, _ = cursor.executed[-2]
+    assert "started_at = COALESCE(started_at, statement_timestamp())" in finish_query
+    assert "finished_at = statement_timestamp()" in finish_query
+
+
+def test_item_stage_timer_starts_with_the_first_claim_and_ends_with_the_last_finish():
+    repo, cursor, _ = make_repo()
+    start = datetime(2026, 11, 9, 10, 0, 0, tzinfo=timezone.utc)
+    finish = datetime(2026, 11, 9, 10, 0, 30, tzinfo=timezone.utc)
+    for counts, timing in (
+        ({"queued": 1}, (None, None)),
+        ({"running": 1, "started_at": start}, (start, None)),
+        ({"successful": 1, "started_at": start, "finished_at": finish}, (start, finish)),
+    ):
+        cursor.fetchone_results = [{"total": 1, **counts}, {"id": 10}]
+        repo.refresh_stage_aggregate(9, "download_pdf")
+        assert cursor.executed[-2][1][2:4] == timing
 
 
 def test_create_pipeline_items_initializes_item_stages():
@@ -535,7 +569,7 @@ def test_claim_queued_item_stages_uses_skip_locked():
     claim_query, claim_params = cursor.executed[0]
     assert "FOR UPDATE SKIP LOCKED" in claim_query
     assert "pis.status = 'queued'" in claim_query
-    assert claim_params == (9, "download_pdf", 2, "task-1")
+    assert claim_params == (9, "download_pdf", "download_pdf", "task-1", 2, "task-1")
 
 
 def test_high_throughput_outcome_reports_partial_errors():
@@ -566,6 +600,7 @@ def test_high_throughput_finalization_is_idempotent():
         {"status": "running"},
         {"count": 0},
         {"failed": 0, "skipped": 0},
+        {"status": "successful"},
         {"locked": True},
         {"status": "successful"},
     ]
@@ -595,7 +630,7 @@ def test_standard_run_outcome_reports_partial_errors():
     assert repo.standard_run_outcome(9) == "completed_with_errors"
     query, params = cursor.executed[-1]
     assert "stage = ANY(%s)" in query
-    assert "status IN ('failed', 'completed_with_errors')" in query
+    assert "status IN ('failed', 'completed_with_errors', 'interrupted')" in query
     assert params[0] == 9
     assert params[1][-1] == "extract_features"
 
@@ -606,7 +641,8 @@ def test_fail_pipeline_run_records_error_event():
     repo.fail_pipeline_run(9, "No UM datasets are imported.")
 
     assert "UPDATE pipeline_runs" in cursor.executed[0][0]
-    event_query, event_params = cursor.executed[1]
+    assert "finished_at = now()" in cursor.executed[1][0]
+    event_query, event_params = cursor.executed[-1]
     assert "INSERT INTO pipeline_run_events" in event_query
     assert event_params[:4] == (9, None, "error", "Pipeline run failed.")
     assert conn.commits == 1

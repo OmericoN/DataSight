@@ -19,6 +19,7 @@ from datasight.application.stage_registry import (
     stage_values,
     task_for_stage,
 )
+from datasight.infrastructure.ingestion.renderer import DEFAULT_RENDER_PROFILE
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--mode", choices=["guided", "local", "enqueue"], default="guided")
     run_all.add_argument("--overwrite", action="store_true")
     run_all.add_argument(
-        "--render-profile", choices=["full_body", "pruned"], default="pruned"
+        "--render-profile", choices=["full_body", "pruned"], default=DEFAULT_RENDER_PROFILE
     )
 
     evaluation_export = subcommands.add_parser(
@@ -76,11 +77,46 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("stages", help="Print canonical stage order")
     subcommands.add_parser("doctor", help="Check database schema readiness")
 
+    for name in ("extract", "resume-extractions"):
+        extraction = subcommands.add_parser(name, help="Extract or resume selected publications in an existing run")
+        extraction.add_argument("--run-id", type=int, required=True)
+        extraction.add_argument("--local", action="store_true", help="Run synchronously instead of queueing")
+
+    inspect_extractions = subcommands.add_parser("extractions", help="Inspect publication extraction outcomes")
+    inspect_extractions.add_argument("--run-id", type=int, required=True)
+
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
+
+    if args.command in {"extract", "resume-extractions"}:
+        from datasight.application.llm_extraction import extraction_configuration, queue_resume, require_compatible_run, resume_extraction
+        from datasight.infrastructure.persistence.repository import PipelineRepository
+
+        if args.local:
+            with PipelineRepository() as repo:
+                if not repo.extraction_lock(args.run_id):
+                    raise ValueError("This run already has active extraction")
+                require_compatible_run(repo, args.run_id)
+                repo.cursor.execute("SELECT config FROM publication_extractions WHERE pipeline_run_id=%s", (args.run_id,))
+                if any(row["config"] not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)) for row in repo.cursor.fetchall()):
+                    raise ValueError("Extraction configuration changed; start a new run")
+                repo.claim_extraction_resume(args.run_id)
+            result = resume_extraction(args.run_id)
+        else:
+            result = queue_resume(args.run_id)
+        print(json.dumps(result, indent=2, default=str))
+        return
+
+    if args.command == "extractions":
+        from datasight.infrastructure.persistence.repository import PipelineRepository
+
+        with PipelineRepository() as repo:
+            items, total = repo.list_extractions(args.run_id, limit=100)
+        print(json.dumps({"items": items, "total": total}, indent=2, default=str))
+        return
 
     if args.command == "worker-command":
         print("uv run celery -A datasight.infrastructure.worker.celery_app:celery_app worker --loglevel=INFO --pool=solo")
@@ -146,7 +182,7 @@ def _add_stage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--all-access", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--delete-pdf", action="store_true")
-    parser.add_argument("--render-profile", choices=["full_body", "pruned"], default="pruned")
+    parser.add_argument("--render-profile", choices=["full_body", "pruned"], default=DEFAULT_RENDER_PROFILE)
     parser.add_argument("--payload-json", help="Deprecated: only used for export rows")
     parser.add_argument("--output", help="Output path for export_insights")
 

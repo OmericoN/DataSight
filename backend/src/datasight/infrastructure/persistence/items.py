@@ -162,8 +162,9 @@ class PipelineItemRepositoryMixin:
                 JOIN pipeline_items pi ON pi.id = pis.pipeline_item_id
                 WHERE pi.pipeline_run_id = %s
                   AND pis.stage = %s
-                  AND pis.status = 'queued'
-                ORDER BY pis.id
+                  AND (pis.status = 'queued' OR
+                       (%s = 'extract_features' AND pis.status = 'running' AND pis.task_id = %s))
+                ORDER BY CASE WHEN pis.status = 'running' THEN 0 ELSE 1 END, pis.id
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
             )
@@ -177,7 +178,7 @@ class PipelineItemRepositoryMixin:
             WHERE pis.id = selected.id
             RETURNING pis.pipeline_item_id
             """,
-            (pipeline_run_id, stage_value, limit, task_id),
+            (pipeline_run_id, stage_value, stage_value, task_id, limit, task_id),
         )
         item_ids = [int(row["pipeline_item_id"]) for row in self.cursor.fetchall()]
         if item_ids:
@@ -210,13 +211,15 @@ class PipelineItemRepositoryMixin:
             SET status = %s,
                 metrics = %s,
                 error = %s,
-                finished_at = now(),
+                finished_at = statement_timestamp(),
                 updated_at = now()
             WHERE pipeline_item_id = %s AND stage = %s
             """,
             (status, psycopg2.extras.Json(metrics or {}), error, item_id, stage_value),
         )
-        if status != "successful":
+        if status == "interrupted":
+            self.cursor.execute("UPDATE pipeline_items SET status='interrupted',updated_at=now() WHERE id=%s", (item_id,))
+        elif status != "successful":
             self._skip_downstream_item_stages(item_id, stage_value)
             self.cursor.execute(
                 "UPDATE pipeline_items SET status = 'failed', updated_at = now() WHERE id = %s",
@@ -243,7 +246,7 @@ class PipelineItemRepositoryMixin:
         self.refresh_stage_aggregate_for_item(item_id, stage_value)
         if status == "successful" and (next_stage := self._next_stage(stage_value)):
             self.refresh_stage_aggregate_for_item(item_id, next_stage.value)
-        if status != "successful":
+        if status not in {"successful", "interrupted"}:
             for downstream in self._downstream_stages(stage_value):
                 self.refresh_stage_aggregate_for_item(item_id, downstream.value)
 
@@ -282,6 +285,7 @@ class PipelineItemRepositoryMixin:
             """
             SELECT
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
                 COUNT(*) FILTER (WHERE pis.status = 'skipped') AS skipped
             FROM pipeline_item_stages pis
             JOIN pipeline_items pi ON pi.id = pis.pipeline_item_id
@@ -344,8 +348,11 @@ class PipelineItemRepositoryMixin:
             """
             SELECT
                 COUNT(*) AS total,
+                MIN(pis.started_at) AS started_at,
+                MAX(pis.finished_at) AS finished_at,
                 COUNT(*) FILTER (WHERE pis.status = 'successful') AS successful,
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
+                COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
                 COUNT(*) FILTER (WHERE pis.status = 'skipped') AS skipped,
                 COUNT(*) FILTER (WHERE pis.status = 'queued') AS queued,
                 COUNT(*) FILTER (WHERE pis.status IN ('running', 'started')) AS running,
@@ -363,13 +370,16 @@ class PipelineItemRepositoryMixin:
 
         successful = int(counts.get("successful") or 0)
         failed = int(counts.get("failed") or 0)
+        interrupted = int(counts.get("interrupted") or 0)
         skipped = int(counts.get("skipped") or 0)
         queued = int(counts.get("queued") or 0)
         running = int(counts.get("running") or 0)
         pending = int(counts.get("pending") or 0)
         terminal = successful + failed + skipped
 
-        if running:
+        if interrupted:
+            status = "interrupted"
+        elif running:
             status = "running"
         elif queued:
             status = "queued"
@@ -392,7 +402,8 @@ class PipelineItemRepositoryMixin:
             "active": queued + running,
             "pending": pending,
         }
-        finished_at_expr = "now()" if terminal == total and not queued and not running and not pending else "NULL"
+        started_at = counts.get("started_at")
+        finished_at = counts.get("finished_at") if terminal == total or interrupted else None
         self.cursor.execute(
             """
             SELECT id FROM stage_runs
@@ -405,27 +416,27 @@ class PipelineItemRepositoryMixin:
         existing = self.cursor.fetchone()
         if existing:
             self.cursor.execute(
-                f"""
+                """
                 UPDATE stage_runs
                 SET status = %s,
                     metrics = %s,
-                    started_at = COALESCE(started_at, now()),
-                    finished_at = {finished_at_expr},
+                    started_at = %s,
+                    finished_at = %s,
                     updated_at = now()
                 WHERE id = %s
                 """,
-                (status, psycopg2.extras.Json(metrics), existing["id"]),
+                (status, psycopg2.extras.Json(metrics), started_at, finished_at, existing["id"]),
             )
         else:
             self.cursor.execute(
-                f"""
+                """
                 INSERT INTO stage_runs (
                     pipeline_run_id, stage, status, attempt_count, metrics,
                     started_at, finished_at, updated_at
                 )
-                VALUES (%s, %s, %s, 1, %s, now(), {finished_at_expr}, now())
+                VALUES (%s, %s, %s, 1, %s, %s, %s, now())
                 """,
-                (pipeline_run_id, stage_value, status, psycopg2.extras.Json(metrics)),
+                (pipeline_run_id, stage_value, status, psycopg2.extras.Json(metrics), started_at, finished_at),
             )
 
         self._insert_pipeline_run_event(

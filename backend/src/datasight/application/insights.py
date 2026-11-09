@@ -32,6 +32,9 @@ INSIGHT_COLUMNS: tuple[str, ...] = (
     "um_dataset_id",
     "um_dataset_title",
     "um_repository",
+    "extraction_status",
+    "provenance",
+    "features",
 )
 
 RUN_RESULT_STAGE_COLUMNS: tuple[str, ...] = (
@@ -121,7 +124,7 @@ def validate_run_candidate_result_columns(columns: Sequence[str] | None) -> list
 
 
 def validate_run_insight_result_columns(columns: Sequence[str] | None) -> list[str]:
-    """Return detailed run-insight columns, excluding stage flags and raw provenance."""
+    """Return detailed run-insight columns, excluding stage flags."""
     return _validate_columns(columns, RUN_INSIGHT_RESULT_COLUMNS, "run insight")
 
 

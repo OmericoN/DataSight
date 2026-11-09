@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from datasight.application.reset import RESET_CONFIRMATION
 from datasight.config import DEFAULT_UM_DATASETS_PATH
 from datasight.domain.run_strategy import RunStrategy
+from datasight.infrastructure.ingestion.renderer import DEFAULT_RENDER_PROFILE
 
 
 class HealthResponse(BaseModel):
@@ -40,7 +41,7 @@ class RunCreateRequest(BaseModel):
     um_datasets_path: str | None = DEFAULT_UM_DATASETS_PATH
     output_path: str = "storage/exports/insights.csv"
     strategy: RunStrategy = RunStrategy.STANDARD
-    render_profile: Literal["full_body", "pruned"] = "pruned"
+    render_profile: Literal["full_body", "pruned"] = DEFAULT_RENDER_PROFILE
 
 
 class StageRunCreateRequest(BaseModel):
@@ -54,14 +55,14 @@ class StageRunCreateRequest(BaseModel):
     open_access_only: bool = True
     overwrite: bool = False
     delete_pdf: bool = False
-    render_profile: Literal["full_body", "pruned"] = "pruned"
+    render_profile: Literal["full_body", "pruned"] = DEFAULT_RENDER_PROFILE
     output_path: str | None = None
 
 
 class RunCreateResponse(BaseModel):
     pipeline_run_id: int
     task_id: str | None = None
-    status: Literal["queued", "running", "successful", "completed_with_errors", "failed", "skipped"]
+    status: Literal["queued", "running", "successful", "completed_with_errors", "failed", "skipped", "interrupted"]
 
 
 class StageRunSummary(BaseModel):

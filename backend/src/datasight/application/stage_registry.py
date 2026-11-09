@@ -15,7 +15,7 @@ STAGE_DESCRIPTIONS: dict[PipelineStage, str] = {
     PipelineStage.GROBID_CONVERT: "Convert downloaded PDFs to TEI XML with GROBID.",
     PipelineStage.RENDER_DOCUMENT: "Render TEI XML into markdown text for mention detection.",
     PipelineStage.DETECT_MENTIONS: "Detect high-recall candidate dataset mentions.",
-    PipelineStage.EXTRACT_FEATURES: "Promote candidates into structured mention records.",
+    PipelineStage.EXTRACT_FEATURES: "Extract evidence-backed dataset features from complete publications using the LLM.",
     PipelineStage.MATCH_UM_DATASET: "Match extracted mentions against imported UM dataset metadata.",
     PipelineStage.EXPORT_INSIGHTS: "Export joined insight rows to CSV.",
 }

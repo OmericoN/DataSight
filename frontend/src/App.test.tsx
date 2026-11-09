@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./app/App";
 import { TooltipProvider } from "./components/ui/tooltip";
+import type { PipelineRunSummary } from "./shared/api/client";
 
 function renderApp(fetchMock: ReturnType<typeof vi.fn>, initialPath = "/") {
   vi.stubGlobal("fetch", fetchMock);
@@ -150,6 +151,9 @@ function defaultFetchMock(resetResponse = response({
         grobid_ready: true,
         details: {},
       });
+    }
+    if (path === "/api/v1/llm/status") {
+      return response({ configured: true, available: false, model: "test-model", message: "Model unavailable." });
     }
     if (path === "/api/v1/stages") {
       return response({
@@ -554,6 +558,23 @@ describe("App routed workflow", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    [{ configured: true, available: true, model: "test-model", message: "Model available." }, "ready", "5/5 ready"],
+    [{ configured: true, available: false, model: "test-model", message: "Model unavailable." }, "unavailable", "4/5 ready"],
+    [{ configured: true, available: false, model: "test-model", message: "Gateway returned HTTP 503." }, "unavailable", "4/5 ready"],
+    [{ configured: false, available: false, model: "test-model", message: "Set LLM_BASE_URL and LLM_API_KEY on the backend." }, "not configured", "4/5 ready"],
+  ])("shows the gateway GPU state as %s", async (llmStatus, expectedState, expectedCount) => {
+    const baseFetch = defaultFetchMock();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === "/api/v1/llm/status" ? Promise.resolve(response(llmStatus)) : baseFetch(input, init),
+    );
+    renderApp(fetchMock, "/insights");
+
+    const gpu = (await screen.findByText("GPU (LLM)")).closest("[title]");
+    await waitFor(() => expect(gpu).toHaveTextContent(expectedState));
+    expect(screen.getByText(expectedCount)).toBeInTheDocument();
+  });
+
   it("defaults to the launch page and navigates to runs", async () => {
     renderApp(defaultFetchMock(), "/launch");
 
@@ -594,7 +615,8 @@ describe("App routed workflow", () => {
     const insightsTab = screen.getByRole("tab", { name: /Insights/ });
     fireEvent.mouseDown(insightsTab, { button: 0 });
     await waitFor(() => expect(insightsTab).toHaveAttribute("data-state", "active"));
-    expect(screen.getByRole("columnheader", { name: "Discovery method" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /View details for Maastricht Health Dataset/ })).toBeInTheDocument();
+    expect(screen.getByText("No additional facts reported")).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "PDF downloaded" })).not.toBeInTheDocument();
   });
 
@@ -673,8 +695,15 @@ describe("App routed workflow", () => {
           rows: [
             {
               paper_id: "W123",
+              publication_title: "Cohort analysis",
+              dataset_name: "Health cohort",
+              dataset_role: "used",
               discovery_mode: "catalog_funnel",
               discovery_methods: ["dataset_citation"],
+              um_dataset_title: "Health cohort catalog record",
+              features: {
+                use: { description: { state: "reported", values: [{ value: "Longitudinal analysis", evidence_ids: ["e1"] }] } },
+              },
             },
           ],
         });
@@ -697,11 +726,9 @@ describe("App routed workflow", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     renderApp(fetchMock, "/insights");
 
-    await screen.findByText("W123");
-    expect(screen.getByRole("columnheader", { name: "Discovery strategy" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Discovery strategy: Smart discovery" }),
-    ).toBeInTheDocument();
+    await screen.findByText("Health cohort");
+    expect(screen.getByText("Longitudinal analysis")).toBeInTheDocument();
+    expect(screen.getByText("Health cohort catalog record")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
     expect(screen.getByLabelText("Include Paper Id")).toBeChecked();
     expect(screen.getByLabelText("Include Discovery method")).toBeChecked();
@@ -716,6 +743,8 @@ describe("App routed workflow", () => {
     });
     expect(createObjectURL).toHaveBeenCalledWith(csvBlob);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:insights");
+    fireEvent.click(screen.getByRole("button", { name: /View details for Health cohort/ }));
+    expect(screen.getByText("Complete field values and evidence for this dataset insight.")).toBeInTheDocument();
   });
 
   it("disables empty insight exports and reports generation failures", async () => {
@@ -1151,5 +1180,64 @@ describe("App routed workflow", () => {
     expect(downloadNode).toBeInTheDocument();
     fireEvent.click(downloadNode);
     expect(screen.getByText("Download PDFs.")).toBeInTheDocument();
+  });
+
+  it("starts the timer when a queued stage starts and freezes it when the stage finishes", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(new Date("2026-05-31T19:02:00Z"));
+    try {
+      const baseFetch = defaultFetchMock();
+      let started = false;
+      let finished = false;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const result = await baseFetch(input, init);
+        if (String(input) !== "/api/v1/runs/39") return result;
+
+        const run = (await result.json()) as PipelineRunSummary;
+        const [discover, download, grobid] = run.stages;
+        Object.assign(discover!, {
+          started_at: "2026-05-31T17:00:00Z",
+          finished_at: "2026-05-31T18:01:02Z",
+        });
+        Object.assign(download!, {
+          status: started ? "running" : "queued",
+          started_at: started ? "2026-05-31T19:02:01Z" : null,
+        });
+        Object.assign(grobid!, { started_at: "invalid" });
+        if (finished) {
+          Object.assign(download!, { status: "successful", finished_at: "2026-05-31T19:02:03Z" });
+          Object.assign(grobid!, {
+            status: "successful",
+            started_at: "2026-05-31T19:02:02Z",
+            finished_at: "2026-05-31T19:02:02Z",
+          });
+        }
+        return response(run);
+      });
+      renderApp(fetchMock, "/runs/39");
+
+      const download = await screen.findByRole("button", { name: /^Inspect Download Pdf/ });
+      const grobid = screen.getByRole("button", { name: /^Inspect Grobid Convert/ });
+      expect(download).toHaveAccessibleDescription("Elapsed time unavailable");
+      expect(grobid).toHaveTextContent("—");
+
+      started = true;
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      await waitFor(() => expect(download).toHaveAccessibleDescription("Elapsed time: 00:00"));
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(download).toHaveAccessibleDescription("Elapsed time: 00:01");
+
+      finished = true;
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      await waitFor(() => expect(download).toHaveTextContent("successful"));
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(download).toHaveAccessibleDescription("Elapsed time: 00:02");
+      expect(screen.getByRole("button", { name: /^Inspect Discover/ })).toHaveTextContent("1:01:02");
+      expect(grobid).toHaveTextContent("—");
+      expect(screen.getByRole("button", { name: /^Inspect Export Insights/ })).toHaveTextContent("—");
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 });

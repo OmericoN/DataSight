@@ -6,7 +6,7 @@ without coupling to any specific storage backend. Components return these result
 decides how to persist them (database, DataFrame, JSON, etc.).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime
@@ -29,7 +29,7 @@ class DownloadResult:
     producer_version: str = "pdf-downloader-v2"
     failure_category: Optional[str] = None
     warnings: list[str] | None = None
-    quality_metrics: dict[str, Any] | None = None
+    quality_metrics: dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
         """Set download_time if not provided."""
@@ -77,7 +77,7 @@ class RenderResult:
     references_count: int = 0
     sha256: Optional[str] = None
     source_sha256: Optional[str] = None
-    producer_version: str = "tei-renderer-v3"
+    producer_version: str = "tei-renderer-v6"
     profile: str = "pruned"
     warnings: list[str] | None = None
     quality_metrics: dict[str, Any] | None = None

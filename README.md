@@ -41,8 +41,10 @@ Start the backend stack:
 ```powershell
 docker compose up -d postgres redis grobid
 docker compose run --rm migrate
-docker compose up api worker
+docker compose up api worker llm-worker
 ```
+
+The `llm-worker` processes the LLM extraction queue.
 
 Open the API docs:
 
@@ -93,6 +95,7 @@ for development diagnostics.
 
 ## Documentation
 
+- [LLM extraction, evidence schema, setup and evaluation](backend/LLM_EXTRACTION.md)
 - [API Usage](docs/API_USAGE.md)
 - [Why DataSight](docs/WHY_DATASIGHT.md)
 - [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md)

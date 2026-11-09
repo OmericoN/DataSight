@@ -1,0 +1,8 @@
+{
+  "run_id": 2,
+  "run_key": "run-8052635a-10d1-44f9-a290-7782cbaf3ee4",
+  "source_run_key": "run-9500c0fb-94e6-43e3-9eed-271fd844e075",
+  "started_utc": "2026-11-02T13:49:07.380795+00:00",
+  "finished_utc": "2026-11-02T13:49:41.231895+00:00",
+  "provenance_note": "Diagnostic only; dirty prototypes or operator stops are not release comparisons."
+}

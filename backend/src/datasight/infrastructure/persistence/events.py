@@ -19,4 +19,6 @@ def event_message(stage: str, status: str, metrics: dict[str, Any] | None, error
     message = (metrics or {}).get("message")
     if isinstance(message, str) and message:
         return message
+    if status == "running":
+        return f"{stage} started."
     return f"{stage} finished with status: {status}."

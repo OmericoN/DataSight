@@ -26,7 +26,7 @@ const disabledStages: StageInfo[] = [
 ];
 
 describe("pipeline view helpers", () => {
-  it("marks the next missing stage as running while a run is active", () => {
+  it("keeps the next stage queued until the worker reports it running", () => {
     const run: PipelineRunSummary = {
       id: 1,
       run_key: "run-1",
@@ -57,7 +57,7 @@ describe("pipeline view helpers", () => {
 
     const visual = mergeStages(stages, run);
 
-    expect(visual.map((stage) => stage.status)).toEqual(["successful", "running", "pending"]);
+    expect(visual.map((stage) => stage.status)).toEqual(["successful", "queued", "pending"]);
   });
 
   it("computes completion from terminal stage states", () => {

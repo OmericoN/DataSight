@@ -1,0 +1,78 @@
+{
+  "cohort": {
+    "accuracy_gate_passed": false,
+    "adopted": false,
+    "benchmark_code_revision": "06ec0dca7d6e70ff30bfaa317032d89ca301da6c",
+    "cohort_wall_seconds": 1740.385,
+    "completion_gate_passed": false,
+    "final_tested_application_revision": "7f62265923bba773865d4a26e66b520a0dc2e764",
+    "first_invocation_http_attempts": 208,
+    "gpu_final_desired_replicas": 0,
+    "gpu_final_ready_replicas": 0,
+    "interrupted_first_invocations": 2,
+    "ordinary_budget_tested": false,
+    "selected_papers": 3,
+    "successful_first_invocations": 1,
+    "successful_papers_per_hour": 2.069
+  },
+  "files_sha256": {
+    "cached_consolidation_check.json": "a49431b5d924c30d8fd377919df5142c46613749123611a31b6e0f957fb7e91d",
+    "download_preflight.json": "6962198a2ac56692bf7624eb1ce4ebca4a17b92ba221b5d79eb8fa7c239628aa",
+    "final_comparison.csv": "c990b33559b4b13483ed91e32fedb1f77796db97ba9366e3dd35fcb030c51da8",
+    "first_occurrence_batch_comparison.csv": "f2b3fb5580628cd36809d07a5d557d3853f3493abda54294e222311dda67c990",
+    "gpu_samples.csv": "597de09ffdf954b4d30ed6994376bd3ed24d3215c5f6815fdb57d0ebae4b81c5",
+    "protocol_probes.csv": "cc3e8d00f3c36bc5833244ea798c9061d88211874f0ff65e78e43361bc55c9d9",
+    "regression_sources.csv": "1f2d2d0d447f4f06ec9b9a246bec57925abfa54bdd5e8494be0052f06083c758",
+    "resume_check.csv": "08ca925c47e10ad5e7f50c6367b23734baaa346c8a046b226de66b9ff0567abe",
+    "runtime_snapshot.json": "f2e46501715fb67e0776331864d6aed92997f8eec00e9f5ce93e868f2934e96d",
+    "shutdown.json": "cfeb71501419101101ed52f0dadc5b12ea13c96f289788db8c78955a81e46814"
+  },
+  "raw_records": {
+    "storage\\evaluation\\dense-occurrence-probe4\\raw.json": {
+      "sha256": "6276891b5c61c759839e9b31c0f548f416416cb048ba7d0624aeb86fdc03f35f"
+    },
+    "storage\\evaluation\\dense-occurrence-probe8-indexed\\raw.json": {
+      "sha256": "1528026b511d13234606a47e88cf75a6e22e3255a44ee354174d5a2b81ef1c1f"
+    },
+    "storage\\evaluation\\dense-occurrence-probe\\raw.json": {
+      "sha256": "bc021c322f879e3e02c1ebdb136a796defa685125610ce8c01678eb4caa7c5f6"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\decode-rate-run-218b96f5.txt": {
+      "sha256": "1acd2058f43866df99e64e0d8983863c6f9c060d12b1bd2e5aad1706faf7cced"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\download_preflight.json": {
+      "sha256": "1b8ee1ee40005261ac2fd87bd3ec0c7ea7848326464937ee2680377c11ba87ec"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\gpu_samples.csv": {
+      "sha256": "d236083a4c0d0ee0750b165a2f05d0bbb8d7119b02c6250c12c908a092eff7e8"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\metrics-2026-11-02T20-56-58.4397850Z.prom": {
+      "sha256": "d43ef7dd785c4acde4e78e449daef5dab09450f891f22da68f2747c7ba994514"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\metrics-before-final-scale-down.prom": {
+      "sha256": "72ae55099c85e9238e9b03da737b6869c8024ea74237a358ecc5bdd7aaada148"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\metrics-final-18.prom": {
+      "sha256": "d43ef7dd785c4acde4e78e449daef5dab09450f891f22da68f2747c7ba994514"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\runtime_snapshot.json": {
+      "sha256": "f2e46501715fb67e0776331864d6aed92997f8eec00e9f5ce93e868f2934e96d"
+    },
+    "storage\\evaluation\\narrowed-runtime-20261102\\shutdown.json": {
+      "sha256": "cfeb71501419101101ed52f0dadc5b12ea13c96f289788db8c78955a81e46814"
+    },
+    "storage\\evaluation\\run-8a456a3d-77d7-4093-818e-cc88f1454eb5-resume-check\\extractions.csv": {
+      "sha256": "b4a36b1afcd0c34c7b77b3affc3b248f246c85a045d2908bc607ddea27416699"
+    },
+    "storage\\evaluation\\run-8a456a3d-77d7-4093-818e-cc88f1454eb5-resume-check\\extractions.json": {
+      "sha256": "055dc252c694c6e72e6d22bedcb36ffc8c91b2b03029f4632e1f7cb1e384d003"
+    },
+    "storage\\evaluation\\run-8a456a3d-77d7-4093-818e-cc88f1454eb5-resume-check\\request_attempts.csv": {
+      "sha256": "9dd2a9541c1ec93f47810ffd0870992c75ec948f4a1d24c35b2c652a349cf005"
+    },
+    "storage\\evaluation\\run-8a456a3d-77d7-4093-818e-cc88f1454eb5-resume-check\\resume_check.json": {
+      "sha256": "f09948291bbfade688948f356de1a4d7d8e9f5d62b2d45f6218fc1d817accdb7"
+    }
+  },
+  "recorded_utc": "2026-11-02T22:27:52.556125+00:00"
+}
