@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -470,6 +471,39 @@ def test_record_stage_result_records_stage_event():
     assert conn.commits == 1
 
 
+def test_stage_start_is_committed_before_the_result_preserves_it():
+    repo, cursor, conn = make_repo()
+
+    repo.record_stage_start("download_pdf", 9)
+
+    insert_query, params = cursor.executed[1]
+    assert "statement_timestamp(), NULL" in insert_query
+    assert params[:3] == (9, "download_pdf", "running")
+    assert cursor.executed[-1][1][3] == "download_pdf started."
+    assert conn.commits == 1
+
+    cursor.fetchone_results = [{"id": 10}]
+    repo.record_stage_result("download_pdf", "successful", pipeline_run_id=9)
+
+    finish_query, _ = cursor.executed[-2]
+    assert "started_at = COALESCE(started_at, statement_timestamp())" in finish_query
+    assert "finished_at = statement_timestamp()" in finish_query
+
+
+def test_item_stage_timer_starts_with_the_first_claim_and_ends_with_the_last_finish():
+    repo, cursor, _ = make_repo()
+    start = datetime(2026, 11, 9, 10, 0, 0, tzinfo=timezone.utc)
+    finish = datetime(2026, 11, 9, 10, 0, 30, tzinfo=timezone.utc)
+    for counts, timing in (
+        ({"queued": 1}, (None, None)),
+        ({"running": 1, "started_at": start}, (start, None)),
+        ({"successful": 1, "started_at": start, "finished_at": finish}, (start, finish)),
+    ):
+        cursor.fetchone_results = [{"total": 1, **counts}, {"id": 10}]
+        repo.refresh_stage_aggregate(9, "download_pdf")
+        assert cursor.executed[-2][1][2:4] == timing
+
+
 def test_create_pipeline_items_initializes_item_stages():
     repo, cursor, conn = make_repo()
     cursor.fetchone_results = [{"id": 100}, {"id": 200}]
@@ -607,7 +641,8 @@ def test_fail_pipeline_run_records_error_event():
     repo.fail_pipeline_run(9, "No UM datasets are imported.")
 
     assert "UPDATE pipeline_runs" in cursor.executed[0][0]
-    event_query, event_params = cursor.executed[1]
+    assert "finished_at = now()" in cursor.executed[1][0]
+    event_query, event_params = cursor.executed[-1]
     assert "INSERT INTO pipeline_run_events" in event_query
     assert event_params[:4] == (9, None, "error", "Pipeline run failed.")
     assert conn.commits == 1

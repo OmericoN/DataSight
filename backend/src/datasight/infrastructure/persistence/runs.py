@@ -47,6 +47,9 @@ class RunRepositoryMixin:
         )
         self.conn.commit()
 
+    def record_stage_start(self, stage: str, pipeline_run_id: int | None) -> None:
+        self.record_stage_result(stage, "running", pipeline_run_id=pipeline_run_id)
+
     def record_stage_result(
         self,
         stage: str,
@@ -57,6 +60,10 @@ class RunRepositoryMixin:
     ) -> None:
         if pipeline_run_id is None:
             return
+        finished_at = "NULL" if status == "running" else "statement_timestamp()"
+        started_at = "COALESCE(started_at, statement_timestamp())"
+        if status == "running":
+            started_at = f"CASE WHEN status = 'running' THEN {started_at} ELSE statement_timestamp() END"
         self.cursor.execute(
             """
             SELECT id, attempt_count
@@ -70,14 +77,14 @@ class RunRepositoryMixin:
         existing = self.cursor.fetchone()
         if existing:
             self.cursor.execute(
-                """
+                f"""
                 UPDATE stage_runs
                 SET status = %s,
                     attempt_count = GREATEST(attempt_count, 1),
                     error = %s,
                     metrics = %s,
-                    started_at = COALESCE(started_at, now()),
-                    finished_at = now(),
+                    started_at = {started_at},
+                    finished_at = {finished_at},
                     updated_at = now()
                 WHERE id = %s
                 """,
@@ -90,12 +97,12 @@ class RunRepositoryMixin:
             )
         else:
             self.cursor.execute(
-                """
+                f"""
                 INSERT INTO stage_runs (
                     pipeline_run_id, stage, status, attempt_count, error, metrics,
                     started_at, finished_at, updated_at
                 )
-                VALUES (%s, %s, %s, 1, %s, %s, now(), now(), now())
+                VALUES (%s, %s, %s, 1, %s, %s, statement_timestamp(), {finished_at}, now())
                 """,
                 (
                     pipeline_run_id,
@@ -156,6 +163,16 @@ class RunRepositoryMixin:
             UPDATE pipeline_runs
             SET status = 'failed', error = %s, finished_at = now(), updated_at = now()
             WHERE id = %s AND status <> 'interrupted'
+            """,
+            (error, pipeline_run_id),
+        )
+        self.cursor.execute(
+            """
+            UPDATE stage_runs
+            SET status = 'failed', error = %s, finished_at = now(), updated_at = now()
+            WHERE pipeline_run_id = %s AND publication_id IS NULL AND status = 'running'
+              AND finished_at IS NULL
+              AND EXISTS (SELECT 1 FROM pipeline_runs WHERE id = pipeline_run_id AND status = 'failed')
             """,
             (error, pipeline_run_id),
         )

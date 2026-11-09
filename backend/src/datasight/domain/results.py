@@ -77,7 +77,7 @@ class RenderResult:
     references_count: int = 0
     sha256: Optional[str] = None
     source_sha256: Optional[str] = None
-    producer_version: str = "tei-renderer-v3"
+    producer_version: str = "tei-renderer-v6"
     profile: str = "pruned"
     warnings: list[str] | None = None
     quality_metrics: dict[str, Any] | None = None

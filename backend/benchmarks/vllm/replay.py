@@ -16,7 +16,8 @@ def replay(source_run_id, legacy=False, paper_id=None, code_revision=None):
     from datasight import config
     def code_hashes():
         paths = ['application/bounded_extraction.py', 'application/extraction_engine.py',
-                 'application/llm_extraction.py', 'infrastructure/llm/client.py']
+                 'application/llm_extraction.py', 'infrastructure/llm/client.py',
+                 'infrastructure/llm/tokenizer.py', 'assets/tokenizer.json']
         return {path: hashlib.sha256((config.PROJECT_ROOT / 'backend/src/datasight' / path).read_bytes()).hexdigest() for path in paths}
     initial_code = code_hashes()
     settings = extraction_configuration(legacy=legacy)

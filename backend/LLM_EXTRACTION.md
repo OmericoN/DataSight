@@ -21,13 +21,16 @@ LLM_API_KEY=<existing gateway secret>
 LLM_MODEL=Qwen/Qwen3.8-27B
 LLM_MODEL_REVISION=1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 LLM_TIMEOUT_SEC=195
-LLM_EXTRACTION_STRATEGY=legacy
+LLM_EXTRACTION_STRATEGY=bounded
+LLM_INFERENCE_CONCURRENCY=4
 ```
 
 `LLM_BASE_URL` is the gateway origin, without `/v1`. Keep revision configuration
 aligned with the serving deployment: the gateway's model listing identifies the
 served name, not independently the weight revision. Credentials are never put
 in run configuration, checkpoints, browser requests, or diagnostic responses.
+The bundled tokenizer comes from the pinned [Qwen3.8-27B revision](https://huggingface.co/Qwen/Qwen3.8-27B/tree/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0)
+and ships with its [Apache 2.0 license](src/datasight/assets/QWEN-LICENSE.txt).
 
 Start the Compose `worker` and `llm-worker` services. The LLM worker uses one
 prefork process by default; `LLM_WORKER_CONCURRENCY` raises the number of
@@ -35,7 +38,7 @@ publication tasks it can run at once. Ordinary pipeline work uses the existing
 worker. Do not run a local resume concurrently with queued extraction of the
 same run.
 
-New runs default to `full_body`. Extraction prepares a separate, content-addressed
+New Markdown renders default to `pruned`. LLM extraction prepares a separate, content-addressed full-body
 snapshot from retained TEI, leaving pruned input untouched. A current, validated
 full-body Markdown artifact can be used if TEI is unavailable. Historical
 pruned-only papers without TEI produce an explicit preparation failure.
@@ -56,19 +59,25 @@ Changed extraction settings require a new run. A successful zero result is a
 completed checkpoint, not permission to repeat inference. An in-flight request
 lost before its checkpoint commits may need to be generated again.
 
-The `bounded` strategy is opt-in while its accuracy gate is evaluated. It uses
-6,000-character indexed source batches, sparse features once per explicit
-dataset group, and up to eight occurrence IDs per request. Optional names that
-cannot be found verbatim in their selected source are retained as unnamed
-references for review. Public extraction fields remain unchanged.
+The default `bounded` strategy scans paragraph-aware blocks targeting 6,000 model
+tokens with 300 characters of overlap. It uses exact indexed source anchors and
+extracts shared fields once per provisional dataset group. It reuses a single
+answer when dataset and occurrence evidence are identical, and budgets batches
+of up to eight other occurrences. Each stage dispatches up to
+`LLM_INFERENCE_CONCURRENCY` requests per publication so vLLM can batch them.
+Keep the publication worker count in mind when changing this limit.
+Optional names that cannot be found verbatim in the source are retained as
+unnamed references for review. Public extraction fields remain unchanged.
 
 Both strategies now have per-invocation safety budgets: five minutes/50 HTTP
 attempts, or 15 minutes/100 attempts for sources over 60,000 characters or more
 than 30 located references. Retries and repairs count. A budget interruption
 publishes no partial result and exposes `extraction_budget_exceeded`; explicit
 resume starts a new invocation budget and reuses successful checkpoints.
-Legacy runs keep their original configuration. New bounded comparisons require
-a new run because prompt and batching versions are part of the fingerprint.
+Legacy runs keep their original configuration. Start a new run to use the
+optimized prompts and batching; completed results remain readable. Extraction
+metrics record HTTP attempts and rejected completions, with wall time and
+partially rejected responses in invocation progress.
 
 Before starting GPU work, freeze a small preview cohort and validate downloads:
 
@@ -92,7 +101,10 @@ interrupted run into a successful one.
 ## Contract
 
 The typed source of truth is `datasight.domain.extraction`. Schema version:
-`dataset-evidence-v1`; prompt version: `whole-publication-v1`.
+`dataset-evidence-v2`; default prompt version: `indexed-sparse-v16`.
+New results collect dataset identity and use evidence. FAIR attributes are deferred
+until after catalogue matching. Earlier completed `v1` results remain readable;
+an incomplete `v1` run needs a new run to use the changed contract.
 
 `PublicationExtraction` contains source hash, coverage, datasets, evidence, and
 unresolved passages. Every dataset has a publication-local ID and separate
@@ -101,13 +113,12 @@ reference occurrences. `Observed[T]` represents each factual field:
 ```json
 {
   "state": "reported",
-  "values": [{"value": "controlled", "evidence_ids": ["e100_140"]}]
+  "values": [{"value": "Alpha cohort", "evidence_ids": ["e100_140"]}]
 }
 ```
 
 States are `reported`, `not_reported`, `unclear`, and `conflicting`.
-`not_reported` has no values. Explicitly unavailable data are a reported
-`unavailable` access mode. Distinct valid versions or roles are not automatically
+`not_reported` has no values. Distinct valid versions or roles are not automatically
 a contradiction. Quoted evidence is anchored against the exact immutable
 Markdown snapshot, with application-computed character offsets and section/
 placement metadata. Offsets are Unicode character indices, not PDF coordinates.
@@ -118,8 +129,8 @@ versions, subsets/time slices, and access dates. Use preserves multiple roles,
 origin, purpose, claim subject, and description. Occurrences preserve local use,
 mention/reference forms, linked or unresolved bibliography pointers, target
 type, attribution, and citation components. A bibliography-only occurrence
-cannot establish creation or reuse. Article identifiers and article/code
-licenses are distinguished from dataset properties.
+cannot establish creation or reuse. Article identifiers are distinguished from
+dataset identifiers.
 
 Grouping uses explicit dataset identifiers, specific names and supported aliases.
 Conflicting identifiers or ambiguous identity links leave separate provisional
@@ -132,42 +143,27 @@ code; the LLM still makes semantic judgments. Grounded quotations alone do not
 prove that a role or dataset association is correct. Human evaluation remains
 necessary.
 
-## FAIR and citation interpretation
+## Matching boundary
 
-These observations support later assessment; they are not compliance tests.
-
-| Principle | Evidence fields |
-|---|---|
-| F1 | Dataset-target identifiers in identity; metadata identifiers |
-| F2, R1 | Metadata descriptions/locations and dataset descriptions |
-| F3 | Explicit metadata-to-dataset identifier links |
-| F4 | Searchable repository/index claims |
-| A1 | Availability, access/download locations and reported protocol |
-| A1.1 | Reported protocol; external verification remains necessary |
-| A1.2 | Authentication, authorization, controlled-access/request procedures |
-| A2 | Claims about metadata persistence |
-| I1 | File formats and knowledge-representation languages; format alone is insufficient |
-| I2 | Reported vocabularies/ontologies; their FAIRness remains unverified |
-| I3 | Qualified relationships to other data/metadata |
-| R1.1 | License statement, name, URL and explicit scope |
-| R1.2 | Collection, processing/derivation provenance and source datasets |
-| R1.3 | Reported community standards |
-
-Restricted access is not automatically a FAIR failure. Claims that a repository
-is searchable, an identifier persistent, or metadata enduring require separate
-verification. The current component makes no external repository requests.
-
-Citation form, referenced-object type, actual use and completeness of attribution
-are separate observations. Formality categories and their rubric are deferred.
-References: [FAIR principles](https://www.gofair.foundation/fair-principles),
-[FORCE11 citation principles](https://force11.org/info/joint-declaration-of-data-citation-principles-final/).
+Extraction retains identity, use, occurrence, and citation evidence. It does not
+assess FAIR attributes or verify an external repository. Catalogue matching is a
+separate stage; FAIR assessment can follow a supported match.
 
 ## Requests, persistence and inspection
 
-The locator scans overlapping source blocks in order, followed by bounded feature
-requests with relevant passages and bibliography context. Input budgeting counts
-UTF-8 bytes conservatively, reserving 2,048 output tokens and 1,024 template tokens
-within the 16,384-token context and the gateway's 20,000-character prompt limit.
+The default locator scans overlapping source blocks targeting 6,000 tokens from the
+pinned Qwen tokenizer, with paragraph-boundary preference and 300-character overlap.
+The opt-in bounded locator retains its indexed 6,000-character segmentation.
+Both use exact model-token counts for the full prompt, reserving 2,048 output tokens
+and 1,024 template tokens within the 16,384-token context and 40,000-character
+gateway limit. Oversized blocks are subdivided. The tokenizer is bundled and checked
+against the configured model revision; an unavailable or mismatched tokenizer fails
+extraction explicitly. Changed block and prompt budgets require a new run; completed
+older results remain readable.
+Deploy the gateway's 40,000-character cap before starting a run with this worker;
+an older gateway can reject a request that passes the worker's local budget.
+
+Feature requests use relevant passages and bibliography context.
 Invalid locator or feature completions get one stricter grounding request before
 bounded subdivision. At the minimum block size, a line-indexed locator can
 select exact source lines without copying their text; invalid indices or names

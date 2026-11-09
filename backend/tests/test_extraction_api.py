@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from datasight.application import llm_extraction
 from datasight.interfaces.api.main import app
 from datasight.interfaces.api.routes import extractions
 
@@ -59,3 +60,18 @@ def test_status_exposes_no_credentials_and_does_not_require_inference(monkeypatc
     assert response.status_code == 200
     assert not response.json()["available"]
     assert "private-test-key" not in response.text
+
+
+def test_resume_rejects_stale_frozen_settings_before_claiming_run(monkeypatch):
+    class StaleRepository(Repository):
+        def extraction_lock(self, run_id):
+            return True
+
+        def get_pipeline_run(self, run_id):
+            return {"config": {"extraction": {"prompt_version": "whole-publication-v1"}}}
+
+    monkeypatch.setattr(llm_extraction, "PipelineRepository", StaleRepository)
+    with TestClient(app) as client:
+        response = client.post("/api/v1/runs/1/extractions/resume")
+    assert response.status_code == 409
+    assert "Start a new run" in response.json()["detail"]

@@ -66,6 +66,8 @@ def discover_publications(
     if preview_id:
         if pipeline_run_id is None:
             raise ValueError("pipeline_run_id is required when materializing a discovery preview.")
+        with PipelineRepository() as repo:
+            repo.record_stage_start(PipelineStage.DISCOVER, pipeline_run_id)
         materialized = materialize_discovery_preview(
             preview_id=preview_id,
             pipeline_run_id=pipeline_run_id,
@@ -100,6 +102,7 @@ def discover_publications(
     )
     client = OpenAlexClient()
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.DISCOVER, pipeline_run_id)
         profile = build_discovery_profile(repo.list_um_dataset_records()) if use_um_profile else None
         discovery_queries = build_openalex_discovery_queries(
             query=query,
@@ -166,6 +169,7 @@ def download_pdf_batch(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.DOWNLOAD_PDF, pipeline_run_id)
         downloader = PDFDownloader(output_dir=PDF_DIR)
         papers = repo.get_papers_needing_download(limit=limit, pipeline_run_id=pipeline_run_id)
         results = downloader.download_papers(papers, overwrite=overwrite)
@@ -182,6 +186,7 @@ def grobid_convert_batch(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.GROBID_CONVERT, pipeline_run_id)
         converter = GrobidConverter(output_dir=XML_DIR)
         papers = repo.get_papers_needing_conversion(limit=limit, pipeline_run_id=pipeline_run_id)
         results = converter.convert_papers(papers, overwrite=overwrite, delete_pdf=delete_pdf)
@@ -198,6 +203,7 @@ def render_document_batch(
     profile: RenderProfile = DEFAULT_RENDER_PROFILE,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.RENDER_DOCUMENT, pipeline_run_id)
         papers = repo.get_papers_needing_rendering(limit=limit, pipeline_run_id=pipeline_run_id)
         results = render_papers(
             papers, output_dir=MARKDOWN_DIR, overwrite=overwrite, profile=profile
@@ -213,6 +219,7 @@ def detect_mentions_batch(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.DETECT_MENTIONS, pipeline_run_id)
         artifacts = repo.get_markdown_artifacts_needing_detection(
             detector_version=DETECTOR_VERSION,
             limit=limit,
@@ -327,6 +334,7 @@ def match_um_dataset_batch(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.MATCH_UM_DATASET, pipeline_run_id)
         records = repo.list_um_dataset_records()
         if not records:
             raise ValueError("No UM datasets are imported. Run import-um-datasets first.")
@@ -610,6 +618,7 @@ def export_insights_csv(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        repo.record_stage_start(PipelineStage.EXPORT_INSIGHTS, pipeline_run_id)
         export_rows = (
             rows if rows is not None else repo.export_insight_rows(pipeline_run_id=pipeline_run_id)
         )
@@ -682,7 +691,7 @@ def export_evaluation_bundle(pipeline_run_id: int, output_dir: str) -> dict[str,
             for occurrence in dataset["occurrences"]:
                 occurrences.append({**identity, **occurrence})
             for group in ("identity", "use", "findability", "accessibility", "interoperability", "reusability"):
-                for field, observed in dataset[group].items():
+                for field, observed in dataset.get(group, {}).items():
                     observations.append({**identity, "field": f"{group}.{field}", **observed})
     identity_columns = ["paper_id", "extraction_id", "dataset_local_id"]
     _write_dict_rows(destination / "datasets.csv", datasets, [*identity_columns, "display_name", "features"])

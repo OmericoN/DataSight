@@ -15,6 +15,7 @@ dependencies = [
     "redis>=7.1.0",
     "requests>=2.32.5",
     "sqlalchemy>=2.0.44",
+    "tokenizers>=0.23.3",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -27,6 +28,9 @@ datasight = "datasight.interfaces.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+datasight = ["assets/tokenizer.json", "assets/QWEN-LICENSE.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

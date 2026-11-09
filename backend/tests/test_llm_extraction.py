@@ -8,12 +8,13 @@ import pytest
 from pydantic import ValidationError
 
 from datasight import config
-from datasight.application.extraction_engine import Block, ExtractionEngine, FEATURES_REPAIR, IndexedLine, IndexedLines, LOCATE_REPAIR, anchor_passage, consolidate, source_blocks, validate_observations
+from datasight.application.extraction_engine import Block, ExtractionEngine, FEATURES_REPAIR, IndexedLine, IndexedLines, LOCATE_REPAIR, LOCATOR_BLOCK_TOKENS, anchor_passage, consolidate, locator_blocks, source_blocks, validate_observations
 from datasight.application.extraction_engine import validate_feature_response
 from datasight.application import llm_extraction, pipeline_services
 from datasight.application.llm_extraction import extraction_configuration, fingerprint, prepare_source
 from datasight.domain.extraction import DatasetEntry, Evidence, EvidenceValue, IdentityFeatures, LocatedPassage, LocatedPassages, Observed, UseFeatures
 from datasight.infrastructure.llm.client import GatewayClient, InferenceError, InferenceUnavailable, InvalidCompletion, OutputTruncated, RequestTooLarge, payload_for, strict_schema
+from datasight.infrastructure.llm.tokenizer import count_tokens
 
 
 class MemoryRequests:
@@ -35,6 +36,7 @@ class MemoryRequests:
 
 class GroundedClient(GatewayClient):
     def __init__(self):
+        super().__init__()
         self.calls = 0
 
     def close(self):
@@ -48,18 +50,12 @@ class GroundedClient(GatewayClient):
             passages = []
             if quote in data["text"]:
                 passages.append({"block_id": data["block_id"], "quote": quote, "quote_occurrence": 0, "dataset_name": "Alpha cohort", "kind": "reference"})
-            if "Access is controlled." in data["text"]:
-                passages.append({"block_id": data["block_id"], "quote": "Access is controlled.", "quote_occurrence": 0, "dataset_name": None, "kind": "support"})
             result = model.model_validate({"passages": passages})
         else:
             fields = {name: {"state": "not_reported", "values": []} for name in model.model_fields}
             for name, value in (("name", "Alpha cohort"), ("roles", "used"), ("claim_subject", "current_publication")):
                 if name in fields:
                     fields[name] = {"state": "reported", "values": [{"value": value, "evidence_ids": [data["evidence"][0]["evidence_id"]]}]}
-            if "access_mode" in fields:
-                for evidence in data["evidence"]:
-                    if "controlled" in evidence["text"]:
-                        fields["access_mode"] = {"state": "reported", "values": [{"value": "controlled", "evidence_ids": [evidence["evidence_id"]]}]}
             result = model.model_validate(fields)
         validate(result)
         record_attempt({"response": {}, "error": None, "elapsed_seconds": 0.01})
@@ -67,6 +63,9 @@ class GroundedClient(GatewayClient):
 
 
 def test_observed_requires_evidence_and_distinguishes_negative_from_missing():
+    from datasight.application.bounded_extraction import GROUPS
+    assert set(GROUPS) == {"identity", "use"}
+    assert extraction_configuration()["schema_version"] == "dataset-evidence-v2"
     assert Observed[str]().state == "not_reported"
     assert Observed[str](state="reported", values=[EvidenceValue(value="Unavailable", evidence_ids=["e1"])]).values[0].value == "Unavailable"
     for invalid in ({"state": "reported", "values": []}, {"state": "not_reported", "values": [{"value": "x", "evidence_ids": ["e"]}]}, {"state": "reported", "values": [{"value": "x", "evidence_ids": []}]}):
@@ -74,6 +73,8 @@ def test_observed_requires_evidence_and_distinguishes_negative_from_missing():
             Observed[str].model_validate(invalid)
     with pytest.raises(ValidationError):
         DatasetEntry.model_validate({"dataset_local_id": "d1", "display_name": "data", "fair_score": 1})
+    with pytest.raises(ValidationError):
+        DatasetEntry.model_validate({"dataset_local_id": "d1", "display_name": "data", "accessibility": {}})
 
 
 def test_exact_quotes_and_repeated_occurrences_are_anchored_locally():
@@ -97,15 +98,67 @@ def test_all_source_is_scanned_including_no_dataset_documents():
         assert right.start < left.end
 
 
+def test_locator_blocks_use_model_tokens_and_preserve_source_offsets():
+    text = ("Alpha cohort evidence. " * 1200 + "\n\n") * 5
+    blocks = locator_blocks(text)
+    assert len(blocks) > 1
+    assert max(count_tokens(text[block.start:block.end]) for block in blocks) >= 4500
+    assert blocks[0].start == 0 and blocks[-1].end == len(text)
+    for index, block in enumerate(blocks):
+        assert count_tokens(text[block.start:block.end]) <= LOCATOR_BLOCK_TOKENS
+        if index:
+            previous = blocks[index - 1]
+            assert block.start == previous.end - 300
+            assert text[block.start:previous.end] == text[previous.end - 300:previous.end]
+        if block.end < len(text):
+            assert text[block.end - 2:block.end] == "\n\n"
+    passage = LocatedPassage(block_id=blocks[-1].block_id, quote="Alpha cohort evidence.",
+                             quote_occurrence=0, dataset_name="Alpha cohort", kind="reference")
+    start, end = anchor_passage(text, blocks[-1], passage)
+    assert text[start:end] == passage.quote
+
+
+def test_token_budget_allows_large_text_but_rejects_context_and_character_overflow():
+    assert payload_for("extract", "alpha " * 6000, LocatedPassages)
+    with pytest.raises(RequestTooLarge):
+        payload_for("extract", "a " * 14000, LocatedPassages)
+    with pytest.raises(RequestTooLarge):
+        payload_for("extract", "a" * 40001, LocatedPassages)
+
+
+def test_tokenizer_revision_mismatch_fails_explicitly(monkeypatch):
+    monkeypatch.setattr(config, "LLM_MODEL_REVISION", "different")
+    with pytest.raises(ValueError, match="differs from the bundled tokenizer"):
+        count_tokens("Alpha cohort")
+
+
+def test_missing_or_changed_tokenizer_fails_explicitly(monkeypatch, tmp_path):
+    from datasight.infrastructure.llm import tokenizer
+    tokenizer._load.cache_clear()
+    monkeypatch.setattr(tokenizer, "TOKENIZER_PATH", tmp_path / "missing.json")
+    with pytest.raises(ValueError, match="is missing"):
+        count_tokens("Alpha cohort")
+    tokenizer.TOKENIZER_PATH.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        count_tokens("Alpha cohort")
+    tokenizer._load.cache_clear()
+
+
+def test_oversized_locator_block_is_subdivided_without_losing_coverage():
+    text = "a" * 41000
+    result = ExtractionEngine(MemoryRequests(), GroundedClient(), 1, text).run("W1", "hash")
+    assert result.coverage["covered_characters"] == len(text)
+    assert result.coverage["validated_blocks"] > 1
+
+
 def test_two_pass_features_are_grounded_and_completed_requests_are_reused():
     repo, client = MemoryRequests(), GroundedClient()
-    text = "# Paper\n\n## Methods\n\nWe used the Alpha cohort.\n\n## Data availability\n\nAccess is controlled.\n"
+    text = "# Paper\n\n## Methods\n\nWe used the Alpha cohort.\n"
     result = ExtractionEngine(repo, client, 1, text).run("W1", "hash")
     assert len(result.datasets) == 1
     dataset = result.datasets[0]
     assert dataset.use.roles.values[0].value == "used"
-    assert dataset.accessibility.access_mode.values[0].value == "controlled"
-    assert dataset.reusability.licenses.state == "not_reported"
+    assert set(dataset.model_dump()) == {"dataset_local_id", "display_name", "identity", "use", "occurrences", "review_reasons"}
     for evidence in result.evidence:
         assert text[evidence.char_start:evidence.char_end] == evidence.quote
     calls = client.calls
@@ -131,7 +184,7 @@ def test_repeated_named_references_reuse_identical_feature_context():
                               "We used the Alpha cohort.\n\nWe used the Alpha cohort.").run("W1", "hash")
     assert len(result.datasets) == 1
     assert len(result.datasets[0].occurrences) == 2
-    assert client.calls == 11  # one locator, six shared groups, two fields per occurrence
+    assert client.calls == 7  # one locator, two shared groups, two fields per occurrence
 
 
 @pytest.mark.parametrize("failure", [OutputTruncated, InvalidCompletion])
@@ -257,12 +310,12 @@ def test_source_snapshot_is_immutable_and_does_not_modify_pruned_input(tmp_path,
     assert fingerprint(digest, extraction_configuration()) != fingerprint("changed", extraction_configuration())
 
 
-def test_strict_schema_and_byte_budget():
+def test_strict_schema_and_token_budget():
     schema = strict_schema(LocatedPassages)
     assert schema["additionalProperties"] is False
     assert schema["$defs"]["LocatedPassage"]["required"] == list(schema["$defs"]["LocatedPassage"]["properties"])
     with pytest.raises(RequestTooLarge):
-        payload_for("extract", "😀" * 5000, LocatedPassages)
+        payload_for("extract", "a " * 14000, LocatedPassages)
 
 
 def test_gateway_auth_unavailable_truncation_and_retry_limits(monkeypatch):
@@ -293,6 +346,22 @@ def test_gateway_auth_unavailable_truncation_and_retry_limits(monkeypatch):
     client.close()
 
 
+def test_gateway_prompt_limit_uses_request_subdivision_error(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://gateway.invalid")
+    monkeypatch.setattr(config, "LLM_API_KEY", "test-secret")
+    response = {"detail": {"error": {"code": "prompt_too_large"}, "max_prompt_chars": 20000}}
+    client = GatewayClient()
+    monkeypatch.setattr(client.session, "post", lambda *args, **kwargs: SimpleNamespace(status_code=400, json=lambda: response))
+    attempts = []
+    try:
+        with pytest.raises(RequestTooLarge, match="prompt size"):
+            client.complete({}, LocatedPassages, attempts.append, lambda result: None)
+        assert len(attempts) == 1
+        assert attempts[0]["http_status"] == 400
+    finally:
+        client.close()
+
+
 def test_bibliography_does_not_establish_reuse_or_allow_invented_identity():
     evidence = Evidence(evidence_id="e1", block_id="b1", quote="Alpha cohort", char_start=0, char_end=12, section_heading="References", standardized_section="other", placement="bibliography")
     use = UseFeatures.model_validate({"roles": {"state": "reported", "values": [{"value": "used", "evidence_ids": ["e1"]}]}})
@@ -313,6 +382,8 @@ def test_shared_run_boundary_includes_zero_detector_candidates_and_stops_on_outa
             return True
         def get_pipeline_run(self, run_id):
             return {"status": "running", "config": {}}
+        def record_stage_start(self, stage, run_id):
+            assert (stage, run_id) == ("extract_features", 1)
         def extraction_publications(self, run_id, limit, publication_id):
             return [{"paper_id": name, 'publication_id': name} for name in ("zero-rules", "gpu-off", "not-dispatched", 'bad-source')]
         def latest_publication_extraction(self, run_id, publication_id):

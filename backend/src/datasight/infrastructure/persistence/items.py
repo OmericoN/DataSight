@@ -211,7 +211,7 @@ class PipelineItemRepositoryMixin:
             SET status = %s,
                 metrics = %s,
                 error = %s,
-                finished_at = now(),
+                finished_at = statement_timestamp(),
                 updated_at = now()
             WHERE pipeline_item_id = %s AND stage = %s
             """,
@@ -348,6 +348,8 @@ class PipelineItemRepositoryMixin:
             """
             SELECT
                 COUNT(*) AS total,
+                MIN(pis.started_at) AS started_at,
+                MAX(pis.finished_at) AS finished_at,
                 COUNT(*) FILTER (WHERE pis.status = 'successful') AS successful,
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
                 COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
@@ -400,7 +402,8 @@ class PipelineItemRepositoryMixin:
             "active": queued + running,
             "pending": pending,
         }
-        finished_at_expr = "now()" if terminal == total and not queued and not running and not pending else "NULL"
+        started_at = counts.get("started_at")
+        finished_at = counts.get("finished_at") if terminal == total or interrupted else None
         self.cursor.execute(
             """
             SELECT id FROM stage_runs
@@ -413,27 +416,27 @@ class PipelineItemRepositoryMixin:
         existing = self.cursor.fetchone()
         if existing:
             self.cursor.execute(
-                f"""
+                """
                 UPDATE stage_runs
                 SET status = %s,
                     metrics = %s,
-                    started_at = COALESCE(started_at, now()),
-                    finished_at = {finished_at_expr},
+                    started_at = %s,
+                    finished_at = %s,
                     updated_at = now()
                 WHERE id = %s
                 """,
-                (status, psycopg2.extras.Json(metrics), existing["id"]),
+                (status, psycopg2.extras.Json(metrics), started_at, finished_at, existing["id"]),
             )
         else:
             self.cursor.execute(
-                f"""
+                """
                 INSERT INTO stage_runs (
                     pipeline_run_id, stage, status, attempt_count, metrics,
                     started_at, finished_at, updated_at
                 )
-                VALUES (%s, %s, %s, 1, %s, now(), {finished_at_expr}, now())
+                VALUES (%s, %s, %s, 1, %s, %s, %s, now())
                 """,
-                (pipeline_run_id, stage_value, status, psycopg2.extras.Json(metrics)),
+                (pipeline_run_id, stage_value, status, psycopg2.extras.Json(metrics), started_at, finished_at),
             )
 
         self._insert_pipeline_run_event(

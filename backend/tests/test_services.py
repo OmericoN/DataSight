@@ -19,13 +19,20 @@ from datasight.domain.stages import PipelineStage
 
 def test_export_insights_csv_includes_discovery_provenance_and_json_cells(tmp_path, monkeypatch):
     class FakeRepo:
+        started = False
+
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
             return None
 
+        def record_stage_start(self, stage, pipeline_run_id):
+            assert (stage, pipeline_run_id) == (PipelineStage.EXPORT_INSIGHTS, 9)
+            self.started = True
+
         def export_insight_rows(self, pipeline_run_id=None):
+            assert self.started
             assert pipeline_run_id == 9
             return [
                 {

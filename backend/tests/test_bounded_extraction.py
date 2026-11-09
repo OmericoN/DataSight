@@ -1,9 +1,11 @@
 import json
+from threading import Barrier, Lock
 from typing import Callable
 
 import pytest
 
 from datasight.application.bounded_extraction import BoundedExtractionEngine, OccurrenceAnswers, SparseFeatures, CompactUnits, decode
+from datasight.application.extraction_engine import Block
 from datasight.domain import extraction as c
 from datasight.infrastructure.llm.client import ExtractionBudgetExceeded
 from test_llm_extraction import MemoryRequests
@@ -50,6 +52,102 @@ def test_repeated_references_share_features_and_batch_occurrences():
     cached = Client()
     assert BoundedExtractionEngine(repo, cached, 1, text).run('W1', 'hash') == result
     assert cached.calls == []
+
+
+def test_all_inference_stages_are_bounded_and_consolidate_in_source_order(monkeypatch):
+    from datasight import config
+    from datasight.application import bounded_extraction
+
+    names = ('Alpha', 'Beta', 'Gamma', 'Delta')
+    paragraphs = [''.join(f'We used {name} in trial {i}.\n' for i in range(6)) for name in names]
+    text = ''.join(paragraphs)
+    ends = [0, *(sum(map(len, paragraphs[:i])) for i in range(1, 5))]
+    monkeypatch.setattr(bounded_extraction, 'indexed_blocks', lambda _: [
+        Block(max(0, start - 15), end) for start, end in zip(ends, ends[1:])])
+
+    class Concurrent(Client):
+        def __init__(self, concurrent):
+            super().__init__()
+            self.barrier = {phase: Barrier(2, timeout=5) for phase in ('locator', 'shared_features', 'occurrences')}
+            self.concurrent = concurrent
+            self.lock = Lock()
+            self.active = dict.fromkeys(self.barrier, 0)
+            self.peak = self.active.copy()
+            self.started = self.active.copy()
+
+        def complete(self, payload, model, record_attempt, validate):
+            phase = ('locator' if model is CompactUnits else
+                     'shared_features' if issubclass(model, SparseFeatures) else 'occurrences')
+            with self.lock:
+                self.active[phase] += 1
+                self.peak[phase] = max(self.active[phase], self.peak[phase])
+                self.started[phase] += 1
+                synchronize = self.concurrent and self.started[phase] <= 2
+            try:
+                if synchronize:
+                    self.barrier[phase].wait()
+                if model is CompactUnits:
+                    self.before_attempt()
+                    lines = json.loads(payload['messages'][1]['content'])['lines']
+                    result = CompactUnits(selections=[
+                        (line['index'], name, 'r') for line in lines for name in names if name in line['text']])
+                    validate(result)
+                    return result
+                return super().complete(payload, model, record_attempt, validate)
+            finally:
+                with self.lock:
+                    self.active[phase] -= 1
+
+    monkeypatch.setattr(config, 'LLM_INFERENCE_CONCURRENCY', 2)
+    client = Concurrent(True)
+    parallel = BoundedExtractionEngine(MemoryRequests(), client, 1, text).run('W1', 'hash')
+    assert client.peak == dict.fromkeys(client.barrier, 2)
+    monkeypatch.setattr(config, 'LLM_INFERENCE_CONCURRENCY', 1)
+    serial = BoundedExtractionEngine(MemoryRequests(), Concurrent(False), 1, text).run('W1', 'hash')
+    assert parallel == serial
+    assert [(entry.display_name, len(entry.occurrences)) for entry in parallel.datasets] == [
+        (name, 6) for name in names]
+    assert all(text[item.char_start:item.char_end] == item.quote for item in parallel.evidence)
+
+
+def test_singleton_reuses_local_use_and_keeps_supported_value_from_partial_field():
+    from datasight.application.bounded_extraction import SparseField
+
+    class Partial(Client):
+        def complete(self, payload, model, record_attempt, validate):
+            if not issubclass(model, SparseFeatures):
+                return super().complete(payload, model, record_attempt, validate)
+            data = json.loads(payload['messages'][1]['content'])
+            self.calls.append(set(data['fields']))
+            observations = []
+            if len(data['fields']) > 1:
+                assert 'citation.mention_form' in data['fields']
+                observations = [
+                    SparseField(f='identity.aliases', s='reported', v='["A1","Invented"]', e=[data['evidence'][0]['evidence_id']]),
+                    SparseField(f='use.roles', s='reported', v='["used"]', e=[data['evidence'][0]['evidence_id']]),
+                ]
+            result = SparseFeatures(observations=observations)
+            validate(result)
+            return result
+
+    client = Partial()
+    engine = BoundedExtractionEngine(MemoryRequests(), client, 1, 'We used Alpha (A1).')
+    dataset, = engine.run('W1', 'hash').datasets
+    assert client.calls[-1] == {'identity.aliases'}
+    assert OccurrenceAnswers not in client.calls
+    assert [item.value for item in dataset.identity.aliases.values] == ['A1']
+    assert dataset.use.roles == dataset.occurrences[0].use.roles
+    assert dataset.use.roles.values[0].evidence_ids == dataset.occurrences[0].evidence_ids
+    assert engine.rejected_fields == 1
+
+
+def test_identifier_mentions_group_unqualified_references_only_when_unambiguous():
+    for text, expected in [
+        ('We used Alpha GSE100.\nWe compared Alpha.', [2]),
+        ('We used Alpha GSE100.\nWe used Alpha GSE200.\nWe compared Alpha.', [1, 1, 1]),
+    ]:
+        result = BoundedExtractionEngine(MemoryRequests(), Client(), 1, text).run('W1', 'hash')
+        assert [len(entry.occurrences) for entry in result.datasets] == expected
 
 
 def test_attempt_and_time_budgets_stop_before_next_http(monkeypatch):
@@ -102,6 +200,30 @@ def test_missing_occurrence_ids_trigger_repair_then_split():
             return super().complete(payload, model, record_attempt, validate)
     result = BoundedExtractionEngine(MemoryRequests(), Missing(), 1, 'We used Alpha.\nWe compared Alpha.').run('W1','hash')
     assert len(result.datasets[0].occurrences) == 2
+
+
+def test_duplicate_occurrence_answer_keeps_valid_values_and_only_requests_missing_id():
+    class Duplicate(Client):
+        def complete(self, payload, model, record_attempt, validate):
+            if issubclass(model, OccurrenceAnswers):
+                data = json.loads(payload['messages'][1]['content'])
+                ids = [item['occurrence_id'] for item in data['occurrences']]
+                self.calls.append(ids)
+                if len(ids) == 2:
+                    result = model.model_validate({'occurrences': [
+                        {'occurrence_id': ids[0], 'fields': {'0': ['r', ['used'], [0]]}},
+                        {'occurrence_id': ids[0], 'fields': {}},
+                    ]})
+                    validate(result)
+                    return result
+            return super().complete(payload, model, record_attempt, validate)
+
+    client = Duplicate()
+    result = BoundedExtractionEngine(MemoryRequests(), client, 1, 'We used Alpha.\nWe compared Alpha.').run('W1', 'hash')
+    used, compared = result.datasets[0].occurrences
+    assert used.use.roles.values[0].evidence_ids == used.evidence_ids
+    assert compared.use.roles.state == 'not_reported'
+    assert [item for item in client.calls if isinstance(item, list)] == [['d1-o1', 'd1-o2'], ['d1-o2']]
 
 
 def test_field_split_keeps_omitted_fields_not_reported():

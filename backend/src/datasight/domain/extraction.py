@@ -1,4 +1,4 @@
-"""Versioned, evidence-backed extraction contract. No FAIR or formality scores."""
+"""Versioned, evidence-backed dataset identity extraction contract."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = "dataset-evidence-v1"
-PROMPT_VERSION = "whole-publication-v1"
+SCHEMA_VERSION = "dataset-evidence-v2"
+PROMPT_VERSION = "whole-publication-v3"
 T = TypeVar("T")
 Role = Literal["created", "used", "comparison", "discussed", "unclear"]
 Target = Literal["dataset", "data_paper", "research_article", "repository", "other", "unknown"]
@@ -49,13 +49,6 @@ class ResourceURL(StrictModel):
     target: Literal["landing_page", "download", "documentation", "code", "publication", "unknown"]
 
 
-class License(StrictModel):
-    statement: str = Field(min_length=1)
-    name: str | None
-    url: str | None
-    scope: Literal["dataset", "code", "article", "unknown"]
-
-
 class IdentityFeatures(StrictModel):
     name: Observed[str] = Field(default_factory=Observed[str])
     description: Observed[str] = Field(default_factory=Observed[str])
@@ -77,43 +70,6 @@ class UseFeatures(StrictModel):
     purposes: Observed[Literal["analysis", "training", "testing", "validation", "benchmarking", "other", "unclear"]] = Field(default_factory=Observed[Literal["analysis", "training", "testing", "validation", "benchmarking", "other", "unclear"]])
     claim_subject: Observed[Literal["current_publication", "prior_work", "unclear"]] = Field(default_factory=Observed[Literal["current_publication", "prior_work", "unclear"]])
     description: Observed[str] = Field(default_factory=Observed[str])
-
-
-class FindabilityFeatures(StrictModel):
-    metadata_description: Observed[str] = Field(default_factory=Observed[str])
-    metadata_locations: Observed[str] = Field(default_factory=Observed[str])
-    metadata_identifiers: Observed[str] = Field(default_factory=Observed[str])
-    metadata_dataset_links: Observed[str] = Field(default_factory=Observed[str])
-    searchable_resource_claims: Observed[str] = Field(default_factory=Observed[str])
-
-
-class AccessibilityFeatures(StrictModel):
-    availability_statement: Observed[str] = Field(default_factory=Observed[str])
-    access_mode: Observed[Literal["public", "controlled", "on_request", "embargoed", "unavailable", "unclear"]] = Field(default_factory=Observed[Literal["public", "controlled", "on_request", "embargoed", "unavailable", "unclear"]])
-    access_locations: Observed[str] = Field(default_factory=Observed[str])
-    protocol: Observed[str] = Field(default_factory=Observed[str])
-    authentication: Observed[str] = Field(default_factory=Observed[str])
-    request_procedure: Observed[str] = Field(default_factory=Observed[str])
-    restrictions: Observed[str] = Field(default_factory=Observed[str])
-    embargo_dates: Observed[str] = Field(default_factory=Observed[str])
-    release_dates: Observed[str] = Field(default_factory=Observed[str])
-    metadata_persistence_claims: Observed[str] = Field(default_factory=Observed[str])
-
-
-class InteroperabilityFeatures(StrictModel):
-    file_formats: Observed[str] = Field(default_factory=Observed[str])
-    representation_languages: Observed[str] = Field(default_factory=Observed[str])
-    vocabularies: Observed[str] = Field(default_factory=Observed[str])
-    qualified_related_resources: Observed[str] = Field(default_factory=Observed[str])
-
-
-class ReusabilityFeatures(StrictModel):
-    licenses: Observed[License] = Field(default_factory=Observed[License])
-    documentation: Observed[str] = Field(default_factory=Observed[str])
-    collection_provenance: Observed[str] = Field(default_factory=Observed[str])
-    processing_provenance: Observed[str] = Field(default_factory=Observed[str])
-    source_datasets: Observed[str] = Field(default_factory=Observed[str])
-    community_standards: Observed[str] = Field(default_factory=Observed[str])
 
 
 class Evidence(StrictModel):
@@ -165,10 +121,6 @@ class DatasetEntry(StrictModel):
     display_name: str
     identity: IdentityFeatures = Field(default_factory=IdentityFeatures)
     use: UseFeatures = Field(default_factory=UseFeatures)
-    findability: FindabilityFeatures = Field(default_factory=FindabilityFeatures)
-    accessibility: AccessibilityFeatures = Field(default_factory=AccessibilityFeatures)
-    interoperability: InteroperabilityFeatures = Field(default_factory=InteroperabilityFeatures)
-    reusability: ReusabilityFeatures = Field(default_factory=ReusabilityFeatures)
     occurrences: list[Occurrence] = Field(default_factory=list)
     review_reasons: list[str] = Field(default_factory=list)
 

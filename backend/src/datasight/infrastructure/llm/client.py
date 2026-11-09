@@ -6,16 +6,18 @@ import json
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from threading import Event, local
 from typing import Any, Callable, TypeVar
 
 import requests
 from pydantic import BaseModel, ValidationError
 
 from datasight import config
+from datasight.infrastructure.llm.tokenizer import count_tokens
 
 MAX_TOKENS = 2048
 CONTEXT_TOKENS = 16384
-MAX_PROMPT_CHARS = 20000
+MAX_PROMPT_CHARS = 40000
 TEMPLATE_RESERVE = 1024
 R = TypeVar("R", bound=BaseModel)
 
@@ -67,10 +69,9 @@ def payload_for(instructions: str, data: Any, model: type[BaseModel]) -> dict[st
     schema = strict_schema(model)
     system = instructions + "\nReturn only JSON matching this schema:\n" + json.dumps(schema, separators=(",", ":"))
     user = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    # Byte-level BPE cannot require more text tokens than UTF-8 bytes. Reserve
-    # chat-template overhead as well as the entire completion allowance.
-    text_bytes = len(system.encode("utf-8")) + len(user.encode("utf-8"))
-    if len(system) + len(user) > MAX_PROMPT_CHARS or text_bytes + MAX_TOKENS + TEMPLATE_RESERVE > CONTEXT_TOKENS:
+    # Count model tokens in both messages; reserve chat-template overhead and output.
+    prompt_tokens = count_tokens(system) + count_tokens(user)
+    if len(system) + len(user) > MAX_PROMPT_CHARS or prompt_tokens + MAX_TOKENS + TEMPLATE_RESERVE > CONTEXT_TOKENS:
         raise RequestTooLarge("Request exceeds the conservative context budget")
     return {
         "model": config.LLM_MODEL,
@@ -98,10 +99,27 @@ def retry_delay(value: str | None, attempt: int) -> float:
 class GatewayClient:
     def __init__(self) -> None:
         self.session = requests.Session()
+        self._worker = local()
         self.before_attempt: Callable[[], float] | None = None
         self.remaining_time: Callable[[], float] | None = None
-        self.attempt_is_retry = False
-        self.request_is_repair = False
+        self.cancel_inference: Event | None = None
+
+    def worker_session(self) -> requests.Session:
+        # requests.Session carries mutable cookies and is owned by one inference worker.
+        self._worker.session = requests.Session()
+        return self._worker.session
+
+    @property
+    def attempt_is_retry(self) -> bool:
+        return getattr(self._worker, "retry", False)
+
+    @property
+    def request_is_repair(self) -> bool:
+        return getattr(self._worker, "repair", False)
+
+    @request_is_repair.setter
+    def request_is_repair(self, value: bool) -> None:
+        self._worker.repair = value
 
     def close(self) -> None:
         self.session.close()
@@ -133,7 +151,7 @@ class GatewayClient:
         if not config.LLM_BASE_URL or not config.LLM_API_KEY:
             raise InferenceError("LLM_BASE_URL and LLM_API_KEY are required")
         for attempt in range(3):
-            self.attempt_is_retry = attempt > 0
+            self._worker.retry = attempt > 0
             remaining = self.before_attempt() if self.before_attempt else config.LLM_TIMEOUT_SEC
             started = time.monotonic()
             response_data: Any = None
@@ -144,7 +162,8 @@ class GatewayClient:
             try:
                 connect_timeout = min(5, remaining / 2)
                 read_timeout = min(config.LLM_TIMEOUT_SEC, max(.001, remaining-connect_timeout))
-                response = self.session.post(config.LLM_BASE_URL + "/v1/chat/completions", json=payload, headers=self._headers(), timeout=(connect_timeout, read_timeout))
+                session = getattr(self._worker, "session", self.session)
+                response = session.post(config.LLM_BASE_URL + "/v1/chat/completions", json=payload, headers=self._headers(), timeout=(connect_timeout, read_timeout))
                 status = response.status_code
                 try:
                     response_data = response.json()
@@ -154,7 +173,11 @@ class GatewayClient:
                     raise InferenceUnavailable("GPU inference is unavailable; resume during a GPU session")
                 if status == 413:
                     raise RequestTooLarge("Gateway rejected request size")
-                if status == 429 or status >= 500:
+                if status == 400:
+                    match response_data:
+                        case {"detail": {"error": {"code": "prompt_too_large"}}}:
+                            raise RequestTooLarge("Gateway rejected prompt size")
+                if status is not None and (status == 429 or status >= 500):
                     retry = True
                     delay = retry_delay(response.headers.get("Retry-After"), attempt)
                     raise InferenceError(f"Transient gateway HTTP {status}")
@@ -196,5 +219,8 @@ class GatewayClient:
                 raise InferenceUnavailable("Rate limit requires a later resume")
             if self.remaining_time is not None and delay >= self.remaining_time():
                 raise ExtractionBudgetExceeded('extraction_budget_exceeded: retry wait exceeds remaining time; resume explicitly')
-            time.sleep(delay)
+            if self.cancel_inference is None:
+                time.sleep(delay)
+            elif self.cancel_inference.wait(delay):
+                raise ExtractionBudgetExceeded("Extraction stopped after another request failed")
         raise InferenceError("Inference attempts exhausted")

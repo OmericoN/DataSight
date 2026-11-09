@@ -11,31 +11,38 @@ from typing import Any
 import psycopg2.extras
 
 from datasight import config
-from datasight.application.bounded_extraction import BoundedExtractionEngine
-from datasight.application.extraction_engine import CHUNK_CHARACTERS, OVERLAP_CHARACTERS, ExtractionEngine
+from datasight.application.bounded_extraction import BoundedExtractionEngine, PROMPT_VERSION as BOUNDED_PROMPT_VERSION
+from datasight.application.extraction_engine import CHUNK_CHARACTERS, LOCATOR_BLOCK_TOKENS, OVERLAP_CHARACTERS, ExtractionEngine
 from datasight.domain.extraction import PROMPT_VERSION, SCHEMA_VERSION
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
 from datasight.infrastructure.ingestion.renderer import RENDERER_VERSION, _write_atomic, extract_markdown
 from datasight.infrastructure.llm.client import CONTEXT_TOKENS, MAX_PROMPT_CHARS, MAX_TOKENS, TEMPLATE_RESERVE, GatewayClient, InferenceUnavailable
+from datasight.infrastructure.llm.tokenizer import TOKENIZER_REVISION, TOKENIZER_SHA256
 from datasight.infrastructure.persistence.repository import PipelineRepository
 
 
 def extraction_configuration(legacy: bool | None = None) -> dict[str, Any]:
     if legacy is None:
-        strategy = os.getenv('LLM_EXTRACTION_STRATEGY', 'legacy')
+        strategy = os.getenv('LLM_EXTRACTION_STRATEGY', 'bounded')
         if strategy not in {'legacy', 'bounded'}:
             raise ValueError('LLM_EXTRACTION_STRATEGY must be legacy or bounded')
         legacy = strategy == 'legacy'
     settings = {
         "schema_version": SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION if legacy else 'indexed-sparse-v14',
+        "prompt_version": PROMPT_VERSION if legacy else BOUNDED_PROMPT_VERSION,
         "llm_model": config.LLM_MODEL,
         "model_revision": config.LLM_MODEL_REVISION,
         "renderer_version": RENDERER_VERSION,
         "render_profile": "full_body",
-        "chunk_characters": CHUNK_CHARACTERS if legacy else 6000,
+        "chunk_characters": None,
+        "fallback_chunk_characters": CHUNK_CHARACTERS if legacy else None,
+        "locator_block_tokens": LOCATOR_BLOCK_TOKENS,
+        "locator_block_policy": "model_tokens_paragraph_v1" if legacy else "indexed_model_tokens_paragraph_v1",
         "overlap_characters": OVERLAP_CHARACTERS,
-        "feature_batching": "group_then_bisect_v1" if legacy else 'sparse_groups_compact_occurrences8_v3',
+        "prompt_budget_version": "model_tokenizer_v1",
+        "tokenizer_revision": TOKENIZER_REVISION,
+        "tokenizer_sha256": TOKENIZER_SHA256,
+        "feature_batching": "group_then_bisect_v1" if legacy else 'fused_singletons_budgeted_occurrences_v1',
         "context_tokens": CONTEXT_TOKENS,
         "max_prompt_characters": MAX_PROMPT_CHARS,
         "template_reserve_tokens": TEMPLATE_RESERVE,
@@ -112,6 +119,9 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
     extraction_id = int(record["id"])
     if record["status"] == "successful":
         return {"paper_id": row["paper_id"], "status": "successful", "datasets": len(record["result"]["datasets"]), "cached": True}
+    if settings not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)):
+        repo.fail_publication_extraction(extraction_id, "failed", "Extraction configuration changed; start a new run")
+        return {"paper_id": row["paper_id"], "status": "failed", "error": "Extraction configuration changed; start a new run"}
     repo.cursor.execute("""
         INSERT INTO artifacts(publication_id,artifact_type,path,sha256,bytes,metadata)
         VALUES (%s,'extraction_source',%s,%s,%s,%s)
@@ -150,6 +160,16 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
         return {"paper_id": row["paper_id"], "status": "failed", "error": str(exc)}
 
 
+def require_compatible_run(repo: PipelineRepository, run_id: int) -> dict[str, Any]:
+    run = repo.get_pipeline_run(run_id)
+    if not run:
+        raise LookupError("Pipeline run not found")
+    frozen = run.get("config", {}).get("extraction")
+    if frozen and frozen not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)):
+        raise ValueError("Run extraction configuration differs from this worker. Start a new run.")
+    return run
+
+
 def extract_run(run_id: int | None, limit: int | None = None, publication_id: int | None = None) -> dict[str, Any]:
     if run_id is None:
         raise ValueError("Whole-publication extraction requires an existing pipeline run ID")
@@ -158,14 +178,10 @@ def extract_run(run_id: int | None, limit: int | None = None, publication_id: in
         with PipelineRepository() as repo:
             if not repo.extraction_lock(run_id, publication_id):
                 raise ValueError("This run already has active extraction")
-            run = repo.get_pipeline_run(run_id)
-            if not run:
-                raise LookupError("Pipeline run not found")
-            frozen = run.get("config", {}).get("extraction")
-            if frozen and frozen not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)):
-                raise ValueError("Run extraction configuration differs from this worker")
+            run = require_compatible_run(repo, run_id)
             if run["status"] == "interrupted":
                 return {"stage": "extract_features", "status": "interrupted", "count": 0, "message": "Inference interrupted; resume explicitly.", "payload": {}}
+            repo.record_stage_start("extract_features", run_id)
             rows = repo.extraction_publications(run_id, limit, publication_id)
             results: list[dict[str, Any]] = []
             prepared = []
@@ -211,6 +227,7 @@ def queue_resume(run_id: int) -> dict[str, Any]:
     with PipelineRepository() as repo:
         if not repo.extraction_lock(run_id):
             raise ValueError("This run already has active extraction")
+        require_compatible_run(repo, run_id)
         repo.cursor.execute("""SELECT DISTINCT config FROM publication_extractions e WHERE pipeline_run_id=%s
             AND id=(SELECT max(id) FROM publication_extractions latest WHERE latest.pipeline_run_id=e.pipeline_run_id AND latest.publication_id=e.publication_id)""", (run_id,))
         if any(row["config"] not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)) for row in repo.cursor.fetchall()):

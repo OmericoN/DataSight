@@ -19,6 +19,7 @@ from datasight.application.stage_registry import (
     stage_values,
     task_for_stage,
 )
+from datasight.infrastructure.ingestion.renderer import DEFAULT_RENDER_PROFILE
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--mode", choices=["guided", "local", "enqueue"], default="guided")
     run_all.add_argument("--overwrite", action="store_true")
     run_all.add_argument(
-        "--render-profile", choices=["full_body", "pruned"], default="full_body"
+        "--render-profile", choices=["full_body", "pruned"], default=DEFAULT_RENDER_PROFILE
     )
 
     evaluation_export = subcommands.add_parser(
@@ -91,13 +92,14 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if args.command in {"extract", "resume-extractions"}:
-        from datasight.application.llm_extraction import extraction_configuration, queue_resume, resume_extraction
+        from datasight.application.llm_extraction import extraction_configuration, queue_resume, require_compatible_run, resume_extraction
         from datasight.infrastructure.persistence.repository import PipelineRepository
 
         if args.local:
             with PipelineRepository() as repo:
                 if not repo.extraction_lock(args.run_id):
                     raise ValueError("This run already has active extraction")
+                require_compatible_run(repo, args.run_id)
                 repo.cursor.execute("SELECT config FROM publication_extractions WHERE pipeline_run_id=%s", (args.run_id,))
                 if any(row["config"] not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)) for row in repo.cursor.fetchall()):
                     raise ValueError("Extraction configuration changed; start a new run")
@@ -180,7 +182,7 @@ def _add_stage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--all-access", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--delete-pdf", action="store_true")
-    parser.add_argument("--render-profile", choices=["full_body", "pruned"], default="full_body")
+    parser.add_argument("--render-profile", choices=["full_body", "pruned"], default=DEFAULT_RENDER_PROFILE)
     parser.add_argument("--payload-json", help="Deprecated: only used for export rows")
     parser.add_argument("--output", help="Output path for export_insights")
 

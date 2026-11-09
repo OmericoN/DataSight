@@ -76,8 +76,8 @@ def run_all_local(
                 ),
             ]
         )
-    except Exception:
-        _finish_run(pipeline_run_id, "failed")
+    except Exception as exc:
+        _fail_run(pipeline_run_id, str(exc))
         raise
     status = _run_outcome(results)
     _finish_run(pipeline_run_id, status)

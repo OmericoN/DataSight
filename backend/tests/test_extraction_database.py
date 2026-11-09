@@ -52,8 +52,9 @@ def database(monkeypatch):
 
 
 def seed(repo):
-    run1 = repo.create_pipeline_run("one", {"extraction": {"schema_version": "v1"}})
-    run2 = repo.create_pipeline_run("two", {"extraction": {"schema_version": "v1"}})
+    config = {"extraction": llm_extraction.extraction_configuration(legacy=True)}
+    run1 = repo.create_pipeline_run("one", config)
+    run2 = repo.create_pipeline_run("two", config)
     repo.cursor.execute("INSERT INTO publications(paper_id,title,source) VALUES ('W1','Paper','test') RETURNING id")
     publication_id = repo.cursor.fetchone()["id"]
     for run in (run1, run2):

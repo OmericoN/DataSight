@@ -164,6 +164,8 @@ class ExtractionRepositoryMixin:
 
     def extraction_metrics(self, extraction_id: int) -> dict[str, Any]:
         self.cursor.execute("""SELECT count(*) AS attempts,
+            count(*) FILTER (WHERE a->>'error' LIKE 'Invalid completion:%'
+                OR a->>'error' = 'Completion reached its output limit') AS rejected_responses,
             COALESCE(sum((a->>'elapsed_seconds')::numeric),0) AS elapsed_seconds,
             COALESCE(sum((a->'usage'->>'prompt_tokens')::bigint),0)::bigint AS prompt_tokens,
             COALESCE(sum((a->'usage'->>'completion_tokens')::bigint),0)::bigint AS completion_tokens,
@@ -285,7 +287,7 @@ class ExtractionRepositoryMixin:
         if int(self.cursor.fetchone()["active"]):
             raise ValueError("Upstream processing is still active; resume when it finishes")
         self.cursor.execute("UPDATE pipeline_runs SET status='queued',error=NULL,finished_at=NULL,updated_at=now() WHERE id=%s", (run_id,))
-        self.cursor.execute("UPDATE stage_runs SET status='queued',error=NULL,finished_at=NULL WHERE pipeline_run_id=%s AND stage='extract_features'", (run_id,))
+        self.cursor.execute("UPDATE stage_runs SET status='queued',error=NULL,started_at=NULL,finished_at=NULL WHERE pipeline_run_id=%s AND stage='extract_features'", (run_id,))
         self.conn.commit()
 
     def finish_resumed_extraction_items(self, run_id: int) -> None:

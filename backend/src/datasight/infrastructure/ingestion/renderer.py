@@ -21,14 +21,16 @@ from datasight.infrastructure.ingestion.file_integrity import sha256_file
 TEI = "http://www.tei-c.org/ns/1.0"
 XML = "http://www.w3.org/XML/1998/namespace"
 NS = {"t": TEI}
-RENDERER_VERSION = "tei-renderer-v4"
+RENDERER_VERSION = "tei-renderer-v6"
 RenderProfile = Literal["full_body", "pruned"]
-DEFAULT_RENDER_PROFILE: RenderProfile = "full_body"
+DEFAULT_RENDER_PROFILE: RenderProfile = "pruned"
 logger = logging.getLogger(__name__)
 
-# Pruning is an explicit ablation; full_body is canonical for extraction.
+# Full body remains available for evaluation and LLM extraction.
 PRUNED_SECTION_PATTERNS = (
     r"related.work",
+    r"previous.work",
+    r"prior.work",
     r"literature.review",
     r"discuss",
     r"conclusion",
@@ -98,7 +100,7 @@ def _parse_references(root: etree._Element) -> dict[str, dict[str, Any]]:
             "doi": dois[0] if dois else "",
             "url": urls[0] if urls else "",
             "label": label,
-            "raw": _clean_text(" ".join(bib.itertext())),
+            "raw": " ".join(_clean_text(" ".join(bib.itertext())).split()),
         }
     return references
 
@@ -279,7 +281,9 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
     reference_ids = set(state.references) if profile == "full_body" else state.cited_refs
     if reference_ids:
         chunks.append("\n\n---\n\n## References\n\n")
-        for ref_id in sorted(reference_ids):
+        for ref_id in state.references:
+            if ref_id not in reference_ids:
+                continue
             ref = state.references[ref_id]
             authors_text = ", ".join(ref["authors"]) or "Unknown"
             doi = f" DOI: https://doi.org/{ref['doi']}" if ref["doi"] else ""
