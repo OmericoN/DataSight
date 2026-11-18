@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./app/App";
@@ -559,11 +559,11 @@ describe("App routed workflow", () => {
   });
 
   it.each([
-    [{ configured: true, available: true, model: "test-model", message: "Model available." }, "ready", "5/5 ready"],
-    [{ configured: true, available: false, model: "test-model", message: "Model unavailable." }, "unavailable", "4/5 ready"],
-    [{ configured: true, available: false, model: "test-model", message: "Gateway returned HTTP 503." }, "unavailable", "4/5 ready"],
-    [{ configured: false, available: false, model: "test-model", message: "Set LLM_BASE_URL and LLM_API_KEY on the backend." }, "not configured", "4/5 ready"],
-  ])("shows the gateway GPU state as %s", async (llmStatus, expectedState, expectedCount) => {
+    [{ configured: true, available: true, model: "test-model", message: "Model available." }, "ready"],
+    [{ configured: true, available: false, model: "test-model", message: "Model unavailable." }, "unavailable"],
+    [{ configured: true, available: false, model: "test-model", message: "Gateway returned HTTP 503." }, "unavailable"],
+    [{ configured: false, available: false, model: "test-model", message: "Set LLM_BASE_URL and LLM_API_KEY on the backend." }, "not configured"],
+  ])("shows the gateway GPU state as %s", async (llmStatus, expectedState) => {
     const baseFetch = defaultFetchMock();
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
       String(input) === "/api/v1/llm/status" ? Promise.resolve(response(llmStatus)) : baseFetch(input, init),
@@ -572,14 +572,18 @@ describe("App routed workflow", () => {
 
     const gpu = (await screen.findByText("GPU (LLM)")).closest("[title]");
     await waitFor(() => expect(gpu).toHaveTextContent(expectedState));
-    expect(screen.getByText(expectedCount)).toBeInTheDocument();
+    expect(screen.queryByText(/^\d+\/\d+ ready$/)).not.toBeInTheDocument();
   });
 
   it("defaults to the launch page and navigates to runs", async () => {
     renderApp(defaultFetchMock(), "/launch");
 
     expect(await screen.findByRole("heading", { name: "Discovery strategy" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Smart", pressed: true })).toBeInTheDocument();
+    const smart = screen.getByRole("radio", { name: "Smart", checked: true });
+    fireEvent.keyDown(smart, { key: "ArrowRight" });
+    const random = screen.getByRole("radio", { name: "Random", checked: true });
+    fireEvent.keyDown(random, { key: "Home" });
+    expect(smart).toBeChecked();
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     const processHelp = screen.getByRole("button", { name: "About Process now" });
     fireEvent.pointerMove(processHelp, { pointerType: "mouse" });
@@ -784,6 +788,7 @@ describe("App routed workflow", () => {
     renderApp(defaultFetchMock(), "/datasets");
 
     expect(await screen.findByText("Catalog verified")).toBeInTheDocument();
+    expect(screen.getAllByText("Verified", { selector: '[data-slot="badge"]' })[0]).toHaveAttribute("data-status-tone", "success");
     expect(screen.getByText("Showing 1–1 of 51")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Maastricht Health Dataset/ }));
 
@@ -990,7 +995,7 @@ describe("App routed workflow", () => {
     fireEvent.click(screen.getByRole("link", { name: /^Runs/ }));
 
     expect(await screen.findByText("Open a run to inspect the workspace, events, and stage metrics.")).toBeInTheDocument();
-    const launchLink = screen.getAllByRole("link", { name: "Launching…" }).at(0)!;
+    const launchLink = screen.getByRole("link", { name: "Launching…" });
     expect(launchLink.querySelector("svg")).toHaveClass("animate-spin");
 
     await act(async () => {
@@ -1043,7 +1048,7 @@ describe("App routed workflow", () => {
     const fetchMock = defaultFetchMock();
     renderApp(fetchMock, "/launch");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Random" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Random" }));
     expect(screen.getByLabelText("Random sample size")).toBeInTheDocument();
     expect(screen.getByLabelText("Sample seed")).toBeInTheDocument();
     expect(screen.queryByLabelText("Optional focus")).not.toBeInTheDocument();
@@ -1176,6 +1181,14 @@ describe("App routed workflow", () => {
     );
     expect(screen.getAllByText("Discover").length).toBeGreaterThan(0);
     expect(screen.getByText("6 active · 8 total")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Stage progress" })).toBeInTheDocument();
+    const expandLog = await screen.findByRole("button", { name: "Expand log entry" });
+    fireEvent.click(expandLog);
+    const expanded = await screen.findByRole("dialog", { name: "Event details" });
+    expect(within(expanded).getByText("Discovery started")).toBeInTheDocument();
+    expect(within(expanded).getByText(/"query": "Maastricht dataset reuse"/)).toBeInTheDocument();
+    fireEvent.click(within(expanded).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(expanded).not.toBeInTheDocument());
     expect(screen.getAllByText("NULL")).toHaveLength(2);
     const disabledMatchNode = screen.getByLabelText(
       "Inspect Match Um Dataset status and filter events",
@@ -1191,6 +1204,7 @@ describe("App routed workflow", () => {
     expect(formalityNode).toHaveTextContent("Evaluate Formality");
     expect(formalityNode).toHaveTextContent("NULL");
     fireEvent.click(formalityNode);
+    expect(formalityNode).toHaveAttribute("aria-pressed", "true");
     expect(container.querySelector("[data-datasight-inspector] [data-slot=card-title]"))
       .toHaveTextContent("Evaluate Formality");
     const downloadNode = screen.getByLabelText("Inspect Download Pdf status and filter events");

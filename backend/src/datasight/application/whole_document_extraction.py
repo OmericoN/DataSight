@@ -4,7 +4,7 @@ import hashlib
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import StrictBool, StrictInt, ValidationError
 
@@ -12,7 +12,7 @@ from datasight import config
 from datasight.application.extraction_engine import INSTRUCTIONS, Block, evidence_for
 from datasight.domain.extraction import (
     DatasetEntry, Evidence, EvidenceValue, IdentityFeatures, LocatedPassage, Observed, Occurrence,
-    PublicationExtraction, StrictModel,
+    PublicationExtraction, StrictModel, UseFeatures,
 )
 from datasight.infrastructure.llm.client import (
     CONTEXT_TOKENS,
@@ -145,11 +145,14 @@ def ground_groups(
     return groups, sorted(evidence_by_line.values(), key=lambda item: item.char_start), failures
 
 
-def saved_completion(attempt: dict[str, Any], finish_reason: str) -> WholeDocumentResponse | None:
+ResponseT = TypeVar('ResponseT', bound=StrictModel)
+
+
+def saved_completion(attempt: dict[str, Any], finish_reason: str, model: type[ResponseT]) -> ResponseT | None:
     try:
         choice = attempt["response"]["choices"][0]
         if choice["finish_reason"] == finish_reason:
-            return WholeDocumentResponse.model_validate_json(choice["message"]["content"])
+            return model.model_validate_json(choice["message"]["content"])
     except (IndexError, KeyError, TypeError, ValidationError):
         return None
     return None
@@ -183,7 +186,7 @@ def extract_whole_document(
             )
         except OutputTruncated:
             reasons.append("output_truncated")
-            response = saved_completion(attempts[-1], "length")
+            response = saved_completion(attempts[-1], "length", WholeDocumentResponse)
     except SourceError as exc:
         reasons.append(str(exc))
     except RequestTooLarge:
@@ -236,6 +239,24 @@ def extract_whole_document(
     }
 
 
+def current_paper_use(roles: dict[str, list[str]], evidence_ids: list[str]) -> UseFeatures:
+    values = []
+    subject_ids = set()
+    for role, references in roles.items():
+        matching = [eid for eid in evidence_ids if eid in references]
+        if matching:
+            values.append({"value": role, "evidence_ids": matching})
+            subject_ids.update(matching)
+    if not values:
+        return UseFeatures()
+    return UseFeatures.model_validate({
+        "roles": {"state": "reported", "values": values},
+        "claim_subject": {"state": "reported", "values": [
+            {"value": "current_publication", "evidence_ids": sorted(subject_ids)},
+        ]},
+    })
+
+
 def publication_result(
     report: dict[str, Any], *, prompt_version: str = PROMPT_VERSION, validated_blocks: int = 1,
 ) -> PublicationExtraction:
@@ -247,13 +268,16 @@ def publication_result(
     datasets, unresolved = [], set()
     for group in report["groups"]:
         group_id, name, ids = group["group_id"], group["name"], group["evidence_ids"]
+        roles = group.get("roles", {})
         entry = DatasetEntry(
             dataset_local_id=group_id,
             display_name=name or "Unnamed dataset",
+            use=current_paper_use(roles, ids),
             identity=IdentityFeatures.model_validate(group.get("identity", {})),
             review_reasons=list(group.get("review_reasons", [])),
             occurrences=[
                 Occurrence(occurrence_id=f"{group_id}-o{index}", evidence_ids=[evidence_id],
+                           use=current_paper_use(roles, [evidence_id]),
                            bibliography_only=by_id[evidence_id].placement == "bibliography")
                 for index, evidence_id in enumerate(ids, 1)
             ],

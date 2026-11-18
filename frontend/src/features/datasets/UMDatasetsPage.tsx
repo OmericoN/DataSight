@@ -274,8 +274,8 @@ function DatasetRow({ dataset, issue, verificationStatus, onSelect }: { dataset:
 }
 
 function IntegrityBadge({ status }: { status: string }) {
-  const variant = status === "verified" ? "secondary" : status === "unchecked" || status === "not_imported" ? "outline" : "destructive";
-  return <Badge variant={variant}>{integrityLabel(status)}</Badge>;
+  const tone = status === "verified" ? "success" : status === "unchecked" ? "muted" : status === "not_imported" ? "warning" : "error";
+  return <Badge variant="outline" data-status-tone={tone}>{integrityLabel(status)}</Badge>;
 }
 
 function integrityLabel(status: string) {

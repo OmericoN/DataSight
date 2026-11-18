@@ -125,6 +125,18 @@ class DatasetEntry(StrictModel):
     review_reasons: list[str] = Field(default_factory=list)
 
 
+def referenced_evidence_ids(value: object) -> set[str]:
+    ids: set[str] = set()
+    if isinstance(value, dict):
+        ids.update(value.get("evidence_ids", []))
+        for child in value.values():
+            ids.update(referenced_evidence_ids(child))
+    elif isinstance(value, list):
+        for child in value:
+            ids.update(referenced_evidence_ids(child))
+    return ids
+
+
 class PublicationExtraction(StrictModel):
     schema_version: str = SCHEMA_VERSION
     prompt_version: str = PROMPT_VERSION
@@ -148,20 +160,8 @@ class PublicationExtraction(StrictModel):
         for dataset in self.datasets:
             if not dataset.occurrences:
                 raise ValueError("Each dataset requires a reference occurrence")
-            for occurrence in dataset.occurrences:
-                if not set(occurrence.evidence_ids) <= evidence_ids:
-                    raise ValueError("Occurrence refers to unknown evidence")
-            def check_references(value: object) -> None:
-                if isinstance(value, dict):
-                    if "evidence_ids" in value and not set(value["evidence_ids"]) <= evidence_ids:
-                        raise ValueError("Field refers to unknown evidence")
-                    for child in value.values():
-                        check_references(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        check_references(child)
-
-            check_references(dataset.model_dump())
+            if not referenced_evidence_ids(dataset.model_dump()) <= evidence_ids:
+                raise ValueError("Field refers to unknown evidence")
         if not set(self.unresolved_mentions) <= evidence_ids:
             raise ValueError("Unresolved mentions refer to unknown evidence")
         if self.coverage.get("covered_characters") != self.coverage.get("source_characters"):

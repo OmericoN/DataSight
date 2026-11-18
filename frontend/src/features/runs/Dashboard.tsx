@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Glass } from "glisse";
 import {
   RiAdminLine,
   RiArrowRightLine,
@@ -11,6 +12,7 @@ import {
   RiErrorWarningLine,
   RiFileList3Line,
   RiFileTextLine,
+  RiFullscreenLine,
   RiGitBranchLine,
   RiListCheck,
   RiLoader4Line,
@@ -28,7 +30,7 @@ import {
   RiTimeLine,
   type RemixiconComponentType,
 } from "@remixicon/react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type ComponentProps } from "react";
 import {
   BrowserRouter,
   Link,
@@ -85,16 +87,17 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sheet,
+  SheetClose,
   SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
   SheetTitle,
+  SheetTrigger,
 } from "@/components/ui/sheet";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -108,6 +111,7 @@ import {
   SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -363,10 +367,10 @@ function PipelineShell() {
   }
 
   return (
-    <SidebarProvider>
-      <Sidebar collapsible="icon">
-        <SidebarHeader className="h-14 justify-center p-2">
-          <div className="flex h-10 w-full items-center justify-between gap-2 px-2 group-data-[collapsible=icon]:hidden">
+    <SidebarProvider className="app-canvas">
+      <Sidebar collapsible="icon" variant="floating">
+        <SidebarHeader className="h-16 justify-center p-1">
+          <div className="flex h-10 w-full items-center justify-between gap-1 px-2 group-data-[collapsible=icon]:hidden">
             <div className="flex min-w-0 items-center gap-2">
               <div className="brand-mark">
                 <img
@@ -376,8 +380,8 @@ function PipelineShell() {
                 />
               </div>
               <div className="min-w-0">
-                <p className="font-heading text-sm font-medium">DataSight</p>
-                <p className="truncate text-xs text-muted-foreground">
+                <p className="font-heading text-base font-semibold tracking-tight">DataSight</p>
+                <p className="truncate text-[11px] text-muted-foreground">
                   Dataset reuse monitoring
                 </p>
               </div>
@@ -389,7 +393,7 @@ function PipelineShell() {
           </div>
           <SidebarTrigger
             aria-label="Open sidebar"
-            className="brand-sidebar-trigger hidden group-data-[collapsible=icon]:inline-flex"
+            className="brand-sidebar-trigger mx-auto hidden group-data-[collapsible=icon]:inline-flex"
           >
             <img
               src={maastrichtBanner}
@@ -423,14 +427,15 @@ function PipelineShell() {
                         tooltip={item.label}
                         className="brand-nav-link"
                       >
-                        <Link to={to}>
+                        <SidebarLink to={to} aria-current={isActive ? "page" : undefined}>
+                          {isActive ? <Glass aria-hidden="true" className="control-lens" /> : null}
                           {item.label === "Launch" && launchJob.isPending ? (
                             <RiLoader4Line className="animate-spin" aria-hidden="true" />
                           ) : (
                             <Icon />
                           )}
                           <span>{item.label === "Launch" && launchJob.isPending ? "Launching…" : item.label}</span>
-                        </Link>
+                        </SidebarLink>
                       </SidebarMenuButton>
                       {item.label === "Runs" && runs.length ? (
                         <SidebarMenuBadge>{runs.length}</SidebarMenuBadge>
@@ -455,36 +460,17 @@ function PipelineShell() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter>
-          <Button
-            asChild
-            variant="outline"
-            size="sm"
-            className="justify-start group-data-[collapsible=icon]:px-2"
-          >
-            <Link to="/launch">
-              {launchJob.isPending ? (
-                <RiLoader4Line className="animate-spin" data-icon="inline-start" aria-hidden="true" />
-              ) : (
-                <RiPlayLine data-icon="inline-start" />
-              )}
-              <span className="group-data-[collapsible=icon]:hidden">
-                {launchJob.isPending ? "Launching…" : "Start run"}
-              </span>
-            </Link>
-          </Button>
-        </SidebarFooter>
         <SidebarRail />
       </Sidebar>
 
-      <SidebarInset>
-        <header className="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-5">
+      <SidebarInset className="bg-transparent">
+        <header className="sticky top-0 z-20 flex min-h-16 items-center gap-2 border-b bg-card px-3 sm:gap-3 sm:px-6">
           <SidebarTrigger
             aria-label="Open navigation menu"
-            className="shrink-0 md:hidden"
+            className="app-glass size-10 shrink-0 rounded-full border md:hidden"
           />
           <div className="min-w-0 flex-1">
-            <h1 className="truncate font-heading text-base font-medium">
+            <h1 className="truncate font-heading text-lg font-semibold tracking-tight sm:text-xl">
               {title}
             </h1>
             {location.pathname !== "/launch" ? (
@@ -495,43 +481,21 @@ function PipelineShell() {
               </p>
             ) : null}
           </div>
-          <HealthPills
-            health={healthQuery.data}
-            isLoading={healthQuery.isLoading}
-            llmStatus={llmQuery.isError ? undefined : llmQuery.data}
-            llmLoading={llmQuery.isLoading}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Refresh"
-            onClick={refreshAll}
-          >
-            <RiRefreshLine />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Toggle theme"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          >
-            {theme === "dark" ? <RiSunLine /> : <RiMoonLine />}
-          </Button>
-          <Button
-            asChild
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Admin settings"
-          >
-            <Link to="/admin">
-              <RiSettings3Line />
-            </Link>
-          </Button>
+          <Glass role="group" aria-label="App controls" className="app-glass app-toolbar flex shrink-0 items-center rounded-full border p-0.5 *:size-9 *:rounded-full">
+            <Button type="button" variant="ghost" size="icon" aria-label="Refresh" onClick={refreshAll}>
+              <RiRefreshLine />
+            </Button>
+            <Button type="button" variant="ghost" size="icon" aria-label="Toggle theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+              {theme === "dark" ? <RiSunLine /> : <RiMoonLine />}
+            </Button>
+            <Button asChild variant="ghost" size="icon">
+              <Link to="/admin" aria-label="Admin settings">
+                <RiSettings3Line />
+              </Link>
+            </Button>
+          </Glass>
         </header>
-        <div className="min-h-[calc(100svh-3.5rem)] p-3 sm:p-5">
+        <div className="min-h-[calc(100svh-4rem)] p-3 sm:p-6">
           <Outlet
             context={
               {
@@ -548,6 +512,12 @@ function PipelineShell() {
       </SidebarInset>
     </SidebarProvider>
   );
+}
+
+function SidebarLink(props: ComponentProps<typeof Link>) {
+  const { isMobile } = useSidebar();
+  const link = <Link {...props} />;
+  return isMobile ? <SheetClose asChild>{link}</SheetClose> : link;
 }
 
 function RunsPage() {
@@ -1404,9 +1374,9 @@ function WorkspaceHeader({
   const parallelStages = activeParallelStages(run, stages);
 
   return (
-    <Card size="sm">
+    <Card size="sm" className="activity-surface @container gap-5" data-theme="dark">
       <CardHeader>
-        <CardTitle>
+        <CardTitle className="text-lg font-semibold group-data-[size=sm]/card:text-lg">
           {run ? run.query || `Run ${run.id}` : "Run workspace"}
         </CardTitle>
         <CardDescription>
@@ -1423,8 +1393,8 @@ function WorkspaceHeader({
           ) : null}
         </CardAction>
       </CardHeader>
-      <CardContent className="grid gap-4 md:grid-cols-[minmax(0,1fr)_260px]">
-        <div className="flex flex-wrap gap-2">
+      <CardContent className="grid gap-4 @2xl:grid-cols-[minmax(0,1fr)_minmax(13rem,1fr)]">
+        <div className="flex flex-wrap gap-2 *:grow [&_p:first-child]:text-base [&_p:first-child]:text-white">
           <MetricPill
             label="Done"
             value={statusCounts.done}
@@ -1449,15 +1419,15 @@ function WorkspaceHeader({
             />
           ) : null}
         </div>
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div className="flex flex-col justify-center gap-2">
+          <div className="flex items-baseline justify-between text-xs text-muted-foreground">
             <span>Stage progress</span>
-            <span>{progress}%</span>
+            <span className="text-xl font-medium tracking-tight text-blue-ink tabular-nums">{progress}%</span>
           </div>
-          <Progress value={progress} />
+          <Progress aria-label="Stage progress" className="activity-progress h-2.5" value={progress} />
         </div>
         {run?.error ? (
-          <Alert variant="destructive" className="md:col-span-2">
+          <Alert variant="destructive" className="@2xl:col-span-2">
             <RiErrorWarningLine />
             <AlertTitle>Run error</AlertTitle>
             <AlertDescription>{run.error}</AlertDescription>
@@ -1590,7 +1560,7 @@ function PipelineGraph({
   const edges = pipelineEdgesForNodes(nodes);
 
   return (
-    <section className="pipeline-canvas min-h-[560px] min-w-0 overflow-auto rounded-xl border bg-card">
+    <section aria-label="Run graph" className="pipeline-canvas min-h-[560px] min-w-0 overflow-auto rounded-xl border">
       <div
         className="relative"
         style={{
@@ -1598,7 +1568,7 @@ function PipelineGraph({
           minWidth: PIPELINE_CANVAS.width,
         }}
       >
-        <div className="absolute left-4 top-4 flex items-center gap-2 rounded-lg border bg-background/80 px-3 py-2 text-xs text-muted-foreground shadow-xs backdrop-blur">
+        <div className="app-glass sticky top-4 left-4 z-10 ml-4 flex w-fit items-center gap-2 rounded-full border px-3 py-2 text-xs text-muted-foreground">
           <RiGitBranchLine />
           <span>Run graph</span>
           <Badge variant="secondary">
@@ -1619,7 +1589,7 @@ function PipelineGraph({
               height={PIPELINE_CANVAS.height + 32}
               filterUnits="userSpaceOnUse"
             >
-              <feGaussianBlur stdDeviation="2" result="blur" />
+              <feGaussianBlur stdDeviation="0.85" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
                 <feMergeNode in="SourceGraphic" />
@@ -1714,6 +1684,7 @@ function PipelineNode({
       data-status-tone={tone}
       data-disabled={!enabled ? "true" : undefined}
       data-working={node.stage.working ? "true" : undefined}
+      aria-pressed={selected}
       aria-label={`Inspect ${titleCase(formatStageName(node.stage.name))} status and filter events`}
       aria-description={elapsed ? `Elapsed time: ${elapsed}` : "Elapsed time unavailable"}
       onClick={onSelect}
@@ -1878,15 +1849,34 @@ function EventLog({
                   {event.message}
                 </p>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label="Copy event payload"
-                onClick={() => copyPayload(event)}
-              >
-                <RiClipboardLine />
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                <Sheet>
+                  <SheetTrigger asChild>
+                    <Button type="button" variant="ghost" size="icon-sm" aria-label="Expand log entry" title="Expand log entry">
+                      <RiFullscreenLine />
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent className="data-[side=right]:w-[calc(100vw-1rem)] data-[side=right]:sm:max-w-5xl">
+                    <SheetHeader className="pr-14">
+                      <SheetTitle>Event details</SheetTitle>
+                      <SheetDescription className="[overflow-wrap:anywhere]">{event.message}</SheetDescription>
+                    </SheetHeader>
+                    <div className="flex items-center justify-between gap-3 px-4">
+                      <span className="text-xs text-muted-foreground">{formatDate(event.created_at)}</span>
+                      <Button type="button" variant="outline" size="sm" onClick={() => copyPayload(event)}>
+                        <RiClipboardLine data-icon="inline-start" />
+                        Copy payload
+                      </Button>
+                    </div>
+                    <pre tabIndex={0} className="mx-4 mb-4 min-h-0 flex-1 overflow-auto rounded-lg border bg-muted p-4 text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
+                      {Object.keys(event.payload).length ? JSON.stringify(event.payload, null, 2) : "No structured payload."}
+                    </pre>
+                  </SheetContent>
+                </Sheet>
+                <Button type="button" variant="ghost" size="icon-sm" aria-label="Copy event payload" onClick={() => copyPayload(event)}>
+                  <RiClipboardLine />
+                </Button>
+              </div>
             </div>
             {Object.keys(event.payload).length ? (
               <pre className="mt-3 box-border max-h-36 w-full min-w-0 max-w-full overflow-auto rounded-md bg-muted p-3 text-xs text-muted-foreground">
@@ -1972,31 +1962,6 @@ function HealthList({
   );
 }
 
-function HealthPills({
-  health,
-  isLoading,
-  llmStatus,
-  llmLoading,
-}: {
-  health: HealthResponse | undefined;
-  isLoading: boolean;
-  llmStatus: LlmStatus | undefined;
-  llmLoading: boolean;
-}) {
-  const checks = healthChecks(health, isLoading, llmStatus, llmLoading);
-  const ready = checks.filter((check) => check.ready).length;
-  return (
-    <div className="hidden items-center gap-2 lg:flex">
-      <Badge
-        variant="outline"
-        className="system-status-badge pointer-events-none"
-      >
-        {isLoading || llmLoading ? "Checking" : `${ready}/${checks.length} ready`}
-      </Badge>
-    </div>
-  );
-}
-
 function StatusBadge({
   status,
   passive = false,
@@ -2034,7 +1999,7 @@ function MetricPill({
 }) {
   return (
     <div className="min-w-0 rounded-lg border bg-background px-3 py-2">
-      <p className="truncate font-heading text-sm font-medium">{value}</p>
+      <p className="truncate font-heading text-sm font-semibold tabular-nums">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
@@ -2122,6 +2087,7 @@ function useTheme() {
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("datasight-theme", theme);
   }, [theme]);
 

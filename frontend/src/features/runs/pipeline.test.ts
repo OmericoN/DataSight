@@ -205,6 +205,7 @@ describe("pipeline view helpers", () => {
     ["skipped", "warning"],
     ["warning", "warning"],
     ["successful", "success"],
+    ["completed_with_errors", "partial-success"],
     ["running", "success"],
     ["queued", "success"],
     ["started", "success"],

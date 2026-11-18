@@ -1,4 +1,4 @@
-"""Sparse, source-grounded catalog features for the fast scanner."""
+"""Sparse, source-grounded catalog features for dataset extraction."""
 
 import re
 from collections.abc import Iterator
@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import StrictBool, StrictInt
 
 from datasight.application.extraction_engine import INSTRUCTIONS
-from datasight.application.fast_candidate_resolution import ACCESSION
+from datasight.application.catalog_candidate_resolution import ACCESSION
 from datasight.application.whole_document_extraction import CandidateGroup, WholeDocumentResponse
 from datasight.domain.candidate_detection import COMPILED_TRIGGERS
 from datasight.domain.extraction import Evidence, IdentityFeatures, StrictModel
@@ -49,6 +49,14 @@ def has_deposit_marker(line: str) -> bool:
     return any(pattern.search(line) for pattern in DEPOSIT_MARKERS)
 
 
+RoleField = Literal["role_used", "role_created", "role_comparison", "role_discussed"]
+ROLE_PROMPT = CATALOG_PROMPT + """
+Also report the current paper's explicitly evidenced role for each dataset as role_used,
+role_created, role_comparison or role_discussed. Quote the shortest exact clause that
+ties the action to this dataset. Omit roles for ambiguous attribution, prior work,
+and bibliography-only evidence. A data deposit alone does not establish a role."""
+
+
 class CatalogChunkResponse(StrictModel):
     c: StrictBool
     g: list[tuple[str | None, StrictBool, list[StrictInt], list[tuple[CatalogField, StrictInt, str]]]]
@@ -58,6 +66,10 @@ class CatalogChunkResponse(StrictModel):
             CandidateGroup(name=name, identity_uncertain=uncertain, line_ids=ids)
             for name, uncertain, ids, _ in self.g
         ])
+
+
+class CatalogUseChunkResponse(CatalogChunkResponse):
+    g: list[tuple[str | None, StrictBool, list[StrictInt], list[tuple[CatalogField | RoleField, StrictInt, str]]]]
 
 
 def catalog_value(field: CatalogField, literal: str, source: Evidence) -> tuple[str, Any] | None:
@@ -113,6 +125,7 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
             line = next(line for line, eid in by_line.items() if name in evidence[eid].quote)
             facts = [*facts, ("accessions", line, name)]
         observations: dict[str, dict[str, Any]] = {}
+        roles: dict[str, list[str]] = {}
         rejected = set()
         grounded = []
         for field, line, literal in facts:
@@ -122,6 +135,15 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
             grounded.extend((key, value, eid) for key, value in citation_facts(field, literal, evidence[eid]))
         for field, literal, eid in grounded:
             if field == "aliases" and group["name"] == literal:
+                continue
+            if field.startswith("role_"):
+                source = evidence[eid]
+                if source.placement == "bibliography" or not literal.strip() or literal not in source.quote:
+                    rejected.add(field)
+                else:
+                    ids_for_role = roles.setdefault(field.removeprefix("role_"), [])
+                    if eid not in ids_for_role:
+                        ids_for_role.append(eid)
                 continue
             fact = catalog_value(field, literal, evidence[eid])
             if fact is None:
@@ -137,5 +159,6 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
         if len(observations.get("year", {}).get("values", [])) > 1:
             observations["year"]["state"] = "conflicting"
             rejected.add("year")
+        group["roles"] = roles
         group["identity"] = IdentityFeatures.model_validate(observations).model_dump(mode="json", exclude_unset=True)
         group["review_reasons"] = [f"Review dataset {field} evidence" for field in sorted(rejected)]

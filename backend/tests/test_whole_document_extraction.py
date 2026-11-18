@@ -8,7 +8,10 @@ import pytest
 from benchmarks.vllm import replay
 from datasight import config
 from datasight.application import llm_extraction
-from datasight.application.fast_extraction import CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION, make_chunk, run_fast_extraction, scan_chunk
+from datasight.application.catalog_extraction import (
+    CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION, PREVIOUS_CATALOG_V4, PROMPT_VERSION,
+    make_chunk, run_catalog_extraction, scan_chunk,
+)
 from datasight.application.whole_document_extraction import WholeDocumentResponse, extract_whole_document
 from datasight.infrastructure.llm.client import (
     MAX_PROMPT_CHARS, MAX_TOKENS, GatewayClient, RequestTooLarge, payload_for, prompt_character_count,
@@ -237,18 +240,32 @@ def checkpoint_repo(saved=None):
     return repo
 
 
+def test_catalog_rename_preserves_saved_version_and_checkpoint(monkeypatch):
+    monkeypatch.setenv("LLM_EXTRACTION_STRATEGY", "fast")
+    assert llm_extraction.extraction_configuration()["prompt_version"] == PROMPT_VERSION
+    previous = llm_extraction.catalog_configuration("pruned", PREVIOUS_CATALOG_V4)
+    assert previous in llm_extraction.supported_extraction_configurations()
+
+    source = "Alpha dataset."
+    old_chunk = make_chunk(source, 0, len(source), MAX_PROMPT_CHARS, prompt_version=PREVIOUS_CATALOG_V4)
+    new_chunk = make_chunk(source, 0, len(source), MAX_PROMPT_CHARS, prompt_version=PROMPT_VERSION)
+    assert old_chunk.key == f"fast:0:{len(source)}:catalog-use"
+    assert new_chunk.key == f"catalog:0:{len(source)}:catalog-use"
+    assert old_chunk.payload == new_chunk.payload
+
+
 @pytest.mark.parametrize("profile", ["pruned", "full_body"])
-def test_fast_run_uses_selected_render_and_continues_if_a_detected_file_disappears(gateway, tmp_path, monkeypatch, profile):
+def test_catalog_run_uses_selected_render_and_continues_if_a_detected_file_disappears(gateway, tmp_path, monkeypatch, profile):
     client, post = gateway
     monkeypatch.delenv("LLM_EXTRACTION_STRATEGY", raising=False)
     monkeypatch.setattr(config, "EXTRACTIONS_DIR", tmp_path / "extractions")
     settings = llm_extraction.extraction_configuration(render_profile=profile)
-    assert settings["prompt_version"] == "fast-catalog-v3"
-    assert llm_extraction.fast_configuration(profile, LEGACY_PROMPT_VERSION) in llm_extraction.supported_extraction_configurations()
+    assert settings["prompt_version"] == "catalog-v4"
+    assert llm_extraction.catalog_configuration(profile, LEGACY_PROMPT_VERSION) in llm_extraction.supported_extraction_configurations()
     assert llm_extraction.extraction_configuration()["render_profile"] == "pruned"
     text = "We used the Alpha cohort.\r\nData were archived."
     source = snapshot(tmp_path, text)
-    post.return_value = completion('{"c":true,"g":[["Alpha",false,[1],[]]]}')
+    post.return_value = completion('{"c":true,"g":[["Alpha",false,[1],[["role_used",1,"We used the Alpha cohort"]]]]}')
 
     repo = checkpoint_repo()
     repo.__enter__.return_value = repo
@@ -277,26 +294,28 @@ def test_fast_run_uses_selected_render_and_continues_if_a_detected_file_disappea
         9, None, None, render_profile=profile, renderer_version=llm_extraction.RENDERER_VERSION,
     )
     post.assert_called_once()
-    assert post.call_args.kwargs["json"]["response_format"]["json_schema"]["name"] == "CatalogChunkResponse"
+    assert post.call_args.kwargs["json"]["response_format"]["json_schema"]["name"] == "CatalogUseChunkResponse"
     repo.publish_extraction.assert_called_once()
     published = repo.publish_extraction.call_args.args[1]
     assert published.coverage["validated_blocks"] == 1
     assert published.datasets[0].display_name == "Alpha"
+    assert published.datasets[0].use.roles.values[0].value == "used"
+    assert published.datasets[0].occurrences[0].use.claim_subject.values[0].value == "current_publication"
     assert (tmp_path / "extractions" / "sources" / profile / f"{published.source_sha256}.md").read_bytes() == text.encode("utf-8")
 
 
-def test_fast_source_does_not_substitute_tei_for_detected_markdown(tmp_path, monkeypatch):
+def test_catalog_source_does_not_substitute_tei_for_detected_markdown(tmp_path, monkeypatch):
     render = MagicMock()
     monkeypatch.setattr(llm_extraction, "extract_markdown", render)
     tei = tmp_path / "paper.xml"
 
     with pytest.raises(ValueError, match="No detected pruned Markdown"):
-        llm_extraction.prepare_fast_source({"xml_path": str(tei)}, "pruned")
+        llm_extraction.prepare_catalog_source({"xml_path": str(tei)}, "pruned")
 
     render.assert_not_called()
 
 
-def test_fast_catalog_fields_grounded_per_dataset_and_resumable(gateway):
+def test_catalog_catalog_fields_grounded_per_dataset_and_resumable(gateway):
     client, post = gateway
     text = ("Alpine (ARGA), released by A. Reed in 2020 on Dryad, measures valley rainfall.\n"
             "Alpine version 2, 2014 wave. Download https://example.org/a.csv. Dataset DOI 10.5555/alpine.\n"
@@ -314,8 +333,8 @@ def test_fast_catalog_fields_grounded_per_dataset_and_resumable(gateway):
         ["GSE12345", False, [3], [["aliases", 3, "ParentStudy"]]],
     ]}))
     repo = checkpoint_repo()
-    result = run_fast_extraction(repo, client, 1, text, "W1", "hash")
-    assert run_fast_extraction(repo, client, 1, text, "W1", "hash") == result
+    result = run_catalog_extraction(repo, client, 1, text, "W1", "hash")
+    assert run_catalog_extraction(repo, client, 1, text, "W1", "hash") == result
     post.assert_called_once()
     alpine, other = result.datasets
     identity = alpine.identity
@@ -332,14 +351,26 @@ def test_fast_catalog_fields_grounded_per_dataset_and_resumable(gateway):
     assert quotes[identity.identifiers.values[0].evidence_ids[0]].startswith("Alpine version 2")
 
 
-def test_fast_catalog_rejects_fact_citing_another_group(gateway):
+def test_catalog_roles_require_body_evidence_and_supported_text(gateway):
+    client, post = gateway
+    text = "We used Alpha.\n# References\n- **[1]** Beta [dataset]."
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1], [["role_created", 1, "We created Alpha"]]],
+        ["Beta", False, [3], [["role_used", 3, "Beta"]]],
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    assert len(result.datasets) == 2
+    assert all(entry.use.roles.state == "not_reported" for entry in result.datasets)
+
+
+def test_catalog_catalog_rejects_fact_citing_another_group(gateway):
     client, post = gateway
     post.return_value = completion('{"c":true,"g":[["Alpha",false,[1],[["repository",2,"Dryad"]]],["Beta",false,[2],[]]]}')
     with pytest.raises(ValueError, match="outside its dataset"):
-        run_fast_extraction(checkpoint_repo(), client, 1, "Alpha\nBeta on Dryad", "W1", "hash")
+        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\nBeta on Dryad", "W1", "hash")
 
 
-def test_fast_catalog_distinguishes_deposit_and_article_byline(gateway):
+def test_catalog_catalog_distinguishes_deposit_and_article_byline(gateway):
     client, post = gateway
     text = ("## References\n"
             "- **[Reed, 2020]** {#b1} Reed, Vale (2020). Alpine [Dataset]. Dryad. DOI: 10.5555/alpine\n"
@@ -350,7 +381,7 @@ def test_fast_catalog_distinguishes_deposit_and_article_byline(gateway):
             ["creators", 3, "Lee"], ["year", 3, "2023"], ["doi", 3, "10.5555/article"],
         ]],
     ]}))
-    result = run_fast_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
     data = json.loads(post.call_args.kwargs["json"]["messages"][1]["content"])
     assert data["possible_data_deposit_lines"] == [2]
     identity = result.datasets[0].identity
@@ -368,12 +399,12 @@ def test_shared_acronym_does_not_merge_distinct_catalog_candidates(gateway):
         ["Alpha Survey", False, [1], [["aliases", 1, "AS"]]],
         ["Alpine Study", False, [2], [["aliases", 2, "AS"]]],
     ]}))
-    result = run_fast_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
     assert [dataset.display_name for dataset in result.datasets] == ["Alpha Survey", "Alpine Study"]
 
 
 @pytest.mark.parametrize("long_line", ["x" * 40_001, "a " * 14_000], ids=["characters", "tokens"])
-def test_fast_preplanned_chunks_cover_long_lines_with_exact_offsets(gateway, long_line):
+def test_catalog_preplanned_chunks_cover_long_lines_with_exact_offsets(gateway, long_line):
     client, post = gateway
     text = f"## Méthodes\r\n{long_line}😀\r\n## References\r\nArchive Dataset"
     supplied = []
@@ -384,7 +415,7 @@ def test_fast_preplanned_chunks_cover_long_lines_with_exact_offsets(gateway, lon
         return completion(json.dumps({"c": True, "g": [[None, True, [lines[-1][0]], []]]}))
 
     post.side_effect = scan
-    result = run_fast_extraction(checkpoint_repo(), client, 11, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 11, text, "W1", "hash")
 
     assert post.call_count >= 2
     assert result.coverage["validated_blocks"] == post.call_count
@@ -397,8 +428,9 @@ def test_fast_preplanned_chunks_cover_long_lines_with_exact_offsets(gateway, lon
 @pytest.mark.parametrize(("finish", "content"), [
     ("length", '{"c":false,"g":[]}'),
     ("stop", '{"c":true,"g":[[null,true,[99],[]]]}'),
+    ("stop", '{"c":false,"g":[]}'),
 ])
-def test_fast_truncation_splits_once_and_resume_reuses_checkpoints(gateway, finish, content):
+def test_catalog_truncation_splits_once_and_resume_reuses_checkpoints(gateway, finish, content):
     client, post = gateway
     repo = checkpoint_repo()
     success = completion('{"c":true,"g":[]}')
@@ -406,15 +438,15 @@ def test_fast_truncation_splits_once_and_resume_reuses_checkpoints(gateway, fini
     text = "Alpha data.\n\nBeta samples."
 
     with pytest.raises(ValueError, match="1 of 2 chunks failed"):
-        run_fast_extraction(repo, client, 11, text, "W1", "hash")
+        run_catalog_extraction(repo, client, 11, text, "W1", "hash")
 
     assert post.call_count == 3
     assert repo.record_extraction_progress.call_args.args[1]["completed_chunks"] == 1
     post.side_effect = None
     post.return_value = success
-    result = run_fast_extraction(repo, client, 11, text, "W1", "hash")
+    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash")
 
-    expected_blocks = 3 if finish == "length" else 2
+    expected_blocks = 3 if finish == "length" or not json.loads(content)["c"] else 2
     assert post.call_count == 3 + expected_blocks - 1
     assert result.datasets == []
     assert result.coverage["validated_blocks"] == expected_blocks
@@ -424,7 +456,7 @@ def test_fast_truncation_splits_once_and_resume_reuses_checkpoints(gateway, fini
 
 
 @pytest.mark.parametrize("saved_response", [False, True])
-def test_fast_keeps_valid_evidence_when_optional_name_is_unsupported(gateway, saved_response):
+def test_catalog_keeps_valid_evidence_when_optional_name_is_unsupported(gateway, saved_response):
     client, post = gateway
     text = "We collected data from the Alpha cohort."
     answer = completion(json.dumps({"complete": True, "groups": [
@@ -440,7 +472,7 @@ def test_fast_keeps_valid_evidence_when_optional_name_is_unsupported(gateway, sa
         }
     repo = checkpoint_repo(saved)
 
-    result = run_fast_extraction(repo, client, 11, text, "W1", "hash", prompt_version=LEGACY_PROMPT_VERSION)
+    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash", prompt_version=LEGACY_PROMPT_VERSION)
 
     assert post.call_count == (0 if saved_response else 1)
     assert result.datasets[0].display_name == "Unnamed dataset"
@@ -451,7 +483,34 @@ def test_fast_keeps_valid_evidence_when_optional_name_is_unsupported(gateway, sa
     assert saved[f"fast:0:{len(text)}"]["status"] == "successful"
 
 
-def test_fast_resumes_a_terminal_truncation_with_compact_output(gateway):
+@pytest.mark.parametrize(("ids", "facts", "error"), [
+    ([2], [], "invalid source references"),
+    ([1, 2], [["repository", 2, "Dryad"]], "outside its dataset"),
+    ([1, 4], [], "invalid source references"),
+])
+def test_catalog_rejects_unsupported_line_evidence(gateway, ids, facts, error):
+    client, post = gateway
+    post.return_value = completion(json.dumps({"c": True, "g": [["Alpha", False, ids, facts]]}))
+    with pytest.raises(ValueError, match=error):
+        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\n\nDryad", "W1", "hash")
+
+
+def test_catalog_recovers_saved_response_with_redundant_blank_line(gateway):
+    client, post = gateway
+    text = "Alpha cohort.\n\nData deposited on Dryad."
+    chunk = make_chunk(text, 0, len(text), MAX_PROMPT_CHARS, prompt_version=PREVIOUS_CATALOG_V4)
+    answer = completion('{"c":true,"g":[["Alpha",false,[1,2,3],[["repository",3,"Dryad"]]]]}')
+    repo = checkpoint_repo({chunk.key: {
+        "status": "failed", "error": "Invalid completion: 1 invalid source references",
+        "attempts": [{"response": answer.json()}],
+    }})
+    result = scan_chunk(repo, client, 11, text, chunk, 0, MAX_PROMPT_CHARS, MagicMock())
+    post.assert_not_called()
+    assert [item["quote"] for item in result["evidence"]] == ["Alpha cohort.", "Data deposited on Dryad."]
+    assert result["groups"][0]["identity"]["repository"]["values"][0]["evidence_ids"] == [result["evidence"][1]["evidence_id"]]
+
+
+def test_catalog_resumes_a_terminal_truncation_with_compact_output(gateway):
     client, post = gateway
     text = "The study used the Alpha cohort."
     chunk = make_chunk(text, 0, len(text), MAX_PROMPT_CHARS)
@@ -480,7 +539,7 @@ def test_prompt_character_budget_includes_message_roles(gateway):
         payload_for("Scan source", data, WholeDocumentResponse, max_prompt_chars=limit - 1)
 
 
-def test_fast_replans_remaining_chunks_when_gateway_reports_a_lower_cap(gateway):
+def test_catalog_replans_remaining_chunks_when_gateway_reports_a_lower_cap(gateway):
     client, post = gateway
     repo = checkpoint_repo()
     cap = 20_000
@@ -498,18 +557,18 @@ def test_fast_replans_remaining_chunks_when_gateway_reports_a_lower_cap(gateway)
 
     post.side_effect = scan
     text = "x" * 65_000
-    result = run_fast_extraction(repo, client, 11, text, "W1", "hash")
+    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash")
 
     assert "".join(accepted) == text
     assert post.call_count == result.coverage["validated_blocks"] + 1
     assert repo.record_extraction_progress.call_args.args[1]["max_prompt_characters"] == cap
     previous_calls = post.call_count
-    resumed = run_fast_extraction(repo, client, 11, text, "W1", "hash")
+    resumed = run_catalog_extraction(repo, client, 11, text, "W1", "hash")
     assert resumed == result
     assert post.call_count == previous_calls
 
 
-def test_fast_compact_resolves_table_labels_and_only_merges_clear_duplicates(gateway, monkeypatch):
+def test_catalog_compact_resolves_table_labels_and_only_merges_clear_duplicates(gateway, monkeypatch):
     client, post = gateway
     first = ("Prior work used D10.\n| Abbre. | Dataset |\n| --- | --- |\n"
              "| D10 Smith | HVSMR 2016 |\nAtlas version 1.\nWe used DeepLesion.\n")
@@ -519,14 +578,14 @@ def test_fast_compact_resolves_table_labels_and_only_merges_clear_duplicates(gat
     text = first + second
     chunks = [make_chunk(text, start, end, MAX_PROMPT_CHARS, prompt_version=CANDIDATE_PROMPT_VERSION)
               for start, end in [(0, len(first)), (len(first), len(text))]]
-    monkeypatch.setattr("datasight.application.fast_extraction.plan_chunks", lambda *args, **kwargs: chunks)
+    monkeypatch.setattr("datasight.application.catalog_extraction.plan_chunks", lambda *args, **kwargs: chunks)
     post.side_effect = [
         completion('{"c":true,"g":[["D10",false,[1]],["Atlas",false,[5]],["DeepLesion",false,[6]]]}'),
         completion('{"c":true,"g":[["HVSMR 2016",false,[1]],["DeepLesion",false,[1]],'
                    '["Atlas",false,[2]],["Alpha",false,[3]],["Beta",false,[3]],["D11",false,[11]]]}'),
     ]
 
-    result = run_fast_extraction(checkpoint_repo(), client, 11, text, "W1", "hash", prompt_version=CANDIDATE_PROMPT_VERSION)
+    result = run_catalog_extraction(checkpoint_repo(), client, 11, text, "W1", "hash", prompt_version=CANDIDATE_PROMPT_VERSION)
 
     assert result.prompt_version == CANDIDATE_PROMPT_VERSION
     names = [item.display_name for item in result.datasets]

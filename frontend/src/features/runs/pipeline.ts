@@ -117,7 +117,7 @@ export function formatStageName(value: string) {
 }
 
 export type StatusTone = "default" | "success" | "warning" | "error" | "muted";
-export type EdgeTone = "success" | "warning" | "error" | "muted";
+export type EdgeTone = "success" | "partial-success" | "warning" | "error" | "muted";
 export type RunStrategy = "standard" | "high_throughput";
 
 export function isTerminalStatus(status: string) {
@@ -129,6 +129,9 @@ export function isWorkingStatus(status: string) {
 }
 
 export function edgeToneFromSourceStatus(status: string): EdgeTone {
+  if (status === "completed_with_errors") {
+    return "partial-success";
+  }
   if (status === "failed" || status === "error") {
     return "error";
   }
@@ -142,16 +145,16 @@ export function edgeToneFromSourceStatus(status: string): EdgeTone {
 }
 
 export function statusTone(status: string): StatusTone {
-  if (status === "successful") {
+  if (status === "successful" || status === "ready") {
     return "success";
   }
-  if (status === "failed" || status === "error") {
+  if (status === "failed" || status === "error" || status === "offline" || status === "unavailable") {
     return "error";
   }
   if (status === "interrupted" || status === "skipped" || status === "warning" || status === "completed_with_errors") {
     return "warning";
   }
-  if (status === "pending" || status === "NULL") {
+  if (status === "pending" || status === "NULL" || status === "checking" || status === "not configured") {
     return "muted";
   }
   return "default";

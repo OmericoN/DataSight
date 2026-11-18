@@ -9,8 +9,8 @@ from pydantic import StrictBool, StrictInt
 
 from datasight import config
 from datasight.application.extraction_engine import consolidate
-from datasight.application.fast_catalog_features import CATALOG_PROMPT, CatalogChunkResponse, attach_catalog_facts, has_deposit_marker
-from datasight.application.fast_candidate_resolution import refine_candidates
+from datasight.application.catalog_features import CATALOG_PROMPT, ROLE_PROMPT, CatalogChunkResponse, CatalogUseChunkResponse, attach_catalog_facts, has_deposit_marker
+from datasight.application.catalog_candidate_resolution import refine_candidates
 from datasight.application.whole_document_extraction import (
     CandidateGroup,
     LOCATE_GROUPS,
@@ -25,10 +25,12 @@ from datasight.infrastructure.llm.client import (
     OutputTruncated, RequestTooLarge, payload_for, prompt_character_count,
 )
 
-PROMPT_VERSION = "fast-catalog-v3"
+PROMPT_VERSION = "catalog-v4"
+PREVIOUS_CATALOG_V4 = "fast-catalog-v4"
+CATALOG_V3 = "fast-catalog-v3"
 CANDIDATE_PROMPT_VERSION = "fast-candidates-v2"
 LEGACY_PROMPT_VERSION = "fast-candidates-v1"
-FAST_PROMPT_VERSIONS = (PROMPT_VERSION, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION)
+CATALOG_PROMPT_VERSIONS = (PROMPT_VERSION, PREVIOUS_CATALOG_V4, CATALOG_V3, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION)
 LOCATE_CHUNK = LOCATE_GROUPS.replace("entire publication", "entire supplied source segment")
 LOCATE_COMPACT = LOCATE_CHUNK.replace("Set complete", "Set c").replace("set complete", "set c") + """
 Return c for scan completion and g for groups. Each group is [name or null,
@@ -36,8 +38,15 @@ identity uncertainty, line IDs]. Emit minified JSON on one line without indentat
 """
 
 
-class SavedOutputTruncated(OutputTruncated):
-    """A previous invocation exhausted the output budget for this chunk."""
+INCOMPLETE_SCAN = "Invalid completion: model reported an incomplete scan"
+
+
+class IncompleteScan(InvalidCompletion):
+    pass
+
+
+class SavedSplitRequired(OutputTruncated):
+    """A saved partial scan requires smaller chunks."""
 
 
 class CompactChunkResponse(StrictModel):
@@ -52,7 +61,9 @@ class CompactChunkResponse(StrictModel):
 
 
 FORMATS = {
-    PROMPT_VERSION: (CatalogChunkResponse, CATALOG_PROMPT, ":catalog"),
+    PROMPT_VERSION: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
+    PREVIOUS_CATALOG_V4: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
+    CATALOG_V3: (CatalogChunkResponse, CATALOG_PROMPT, ":catalog"),
     CANDIDATE_PROMPT_VERSION: (CompactChunkResponse, LOCATE_COMPACT, ":compact"),
     LEGACY_PROMPT_VERSION: (WholeDocumentResponse, LOCATE_CHUNK, ""),
 }
@@ -68,14 +79,15 @@ class Chunk:
 
     @property
     def key(self) -> str:
-        return f"fast:{self.start}:{self.end}" + FORMATS[self.prompt_version][2]
+        prefix = "catalog" if self.prompt_version == PROMPT_VERSION else "fast"
+        return f"{prefix}:{self.start}:{self.end}" + FORMATS[self.prompt_version][2]
 
 
 def make_chunk(text: str, start: int, end: int, max_prompt_chars: int, *, prompt_version: str = LEGACY_PROMPT_VERSION) -> Chunk:
     lines = text[start:end].splitlines(keepends=True)
     model, instruction, _ = FORMATS[prompt_version]
     data: dict[str, Any] = {"lines": list(enumerate(lines, 1))}
-    if model is CatalogChunkResponse:
+    if issubclass(model, CatalogChunkResponse):
         deposits = [i for i, line in data["lines"] if line.startswith("- **[")
                     and ("DOI:" in line or "URL:" in line) and has_deposit_marker(line)]
         if deposits:
@@ -119,7 +131,7 @@ def plan_chunks(text: str, start: int, stop: int, max_prompt_chars: int, *, prom
             else:
                 low = end + 1
         if best is None:
-            raise RequestTooLarge("Fast extraction prompt cannot fit even a single source character")
+            raise RequestTooLarge("Catalog extraction prompt cannot fit even a single source character")
         if best.end < stop:
             boundary = preferred_end(text, start, best.end)
             if boundary < best.end:
@@ -133,9 +145,15 @@ def plan_chunks(text: str, start: int, stop: int, max_prompt_chars: int, *, prom
 
 
 def ground_chunk(text: str, chunk: Chunk, response: WholeDocumentResponse | CompactChunkResponse | CatalogChunkResponse) -> dict[str, Any]:
+    if isinstance(response, CatalogChunkResponse):
+        blank_lines = {i for i, line in enumerate(chunk.lines, 1) if not line.strip()}
+        response = response.model_copy(update={"g": [
+            (name, uncertain, [i for i in ids if i not in blank_lines], facts)
+            for name, uncertain, ids, facts in response.g
+        ]})
     scan = response if isinstance(response, WholeDocumentResponse) else response.expand()
     if not scan.complete:
-        raise InvalidCompletion("Invalid completion: model reported an incomplete scan")
+        raise IncompleteScan(INCOMPLETE_SCAN)
     groups, evidence, failures = ground_groups(
         text, chunk.lines, scan, start_offset=chunk.start, allow_unsupported_names=True,
     )
@@ -159,9 +177,11 @@ def scan_chunk(
         max_prompt_chars = min(max_prompt_chars, saved_limit)
     if prompt_character_count(chunk.payload["messages"]) > max_prompt_chars:
         raise RequestTooLarge("Prompt exceeds the gateway character limit", max_prompt_chars=max_prompt_chars)
+    if checkpoint and checkpoint.get("error") == INCOMPLETE_SCAN and split_depth < 2:
+        raise SavedSplitRequired(INCOMPLETE_SCAN)
     if saved_failure.get("reason") == "output_truncated":
         if split_depth < 2:
-            raise SavedOutputTruncated("Saved output truncation")
+            raise SavedSplitRequired("Saved output truncation")
         if chunk.prompt_version != LEGACY_PROMPT_VERSION:
             raise OutputTruncated("Compact completion reached its output limit")
         chunk = make_chunk(text, chunk.start, chunk.end, max_prompt_chars, prompt_version=CANDIDATE_PROMPT_VERSION)
@@ -171,9 +191,9 @@ def scan_chunk(
         if checkpoint and (checkpoint["result"] or {}).get("reason") == "output_truncated":
             raise OutputTruncated("Compact completion reached its output limit")
 
-    if checkpoint and (checkpoint.get("error") or "").endswith(" invalid source references or names"):
+    if checkpoint and (checkpoint.get("error") or "").endswith((" invalid source references", " invalid source references or names")):
         attempts = checkpoint.get("attempts") or []
-        response = saved_completion(attempts[-1], "stop") if attempts else None
+        response = saved_completion(attempts[-1], "stop", FORMATS[chunk.prompt_version][0]) if attempts else None
         if response is not None:
             try:
                 result = ground_chunk(text, chunk, response)
@@ -203,7 +223,7 @@ def scan_chunk(
     return result
 
 
-def run_fast_extraction(
+def run_catalog_extraction(
     repo: Any, client: GatewayClient, extraction_id: int, text: str, paper_id: str, source_sha256: str,
     *, prompt_version: str = PROMPT_VERSION,
 ) -> PublicationExtraction:
@@ -223,12 +243,12 @@ def run_fast_extraction(
 
     def progress() -> None:
         repo.record_extraction_progress(extraction_id, {
-            "phase": "fast", "attempts_this_invocation": attempts, "call_limit": call_limit,
+            "phase": "catalog", "attempts_this_invocation": attempts, "call_limit": call_limit,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "time_limit_seconds": config.LLM_TIMEOUT_SEC * call_limit,
             "planned_chunks": planned_chunks, "completed_chunks": completed,
             "max_prompt_characters": max_prompt_chars,
-            "calls_by_phase": {"fast": attempts},
+            "calls_by_phase": {"catalog": attempts},
         })
 
     progress()
@@ -251,8 +271,8 @@ def run_fast_extraction(
             pending.extendleft((part, split_depth) for part in reversed(replacements))
             planned_chunks += len(replacements) - 1
             call_limit += len(replacements) - int(attempts == attempts_before)
-        except OutputTruncated as exc:
-            if (split_depth == 0 or isinstance(exc, SavedOutputTruncated)) and chunk.end - chunk.start > 1:
+        except (OutputTruncated, IncompleteScan) as exc:
+            if (split_depth == 0 or isinstance(exc, SavedSplitRequired)) and chunk.end - chunk.start > 1:
                 midpoint = preferred_end(text, chunk.start, (chunk.start + chunk.end) // 2)
                 left = make_chunk(text, chunk.start, midpoint, max_prompt_chars, prompt_version=chunk.prompt_version)
                 right = make_chunk(text, midpoint, chunk.end, max_prompt_chars, prompt_version=chunk.prompt_version)
@@ -275,9 +295,9 @@ def run_fast_extraction(
             progress()
 
     if errors:
-        raise ValueError(f"Fast extraction incomplete. {len(errors)} of {planned_chunks} chunks failed. {errors[0]}")
+        raise ValueError(f"Catalog extraction incomplete. {len(errors)} of {planned_chunks} chunks failed. {errors[0]}")
     if covered != len(text):
-        raise ValueError("Fast extraction incomplete. Source coverage has a gap.")
+        raise ValueError("Catalog extraction incomplete. Source coverage has a gap.")
     blocked = refine_candidates(text, groups, evidence) if compact else set()
     result = publication_result({
         "status": "complete", "paper_id": paper_id, "source_sha256": source_sha256,

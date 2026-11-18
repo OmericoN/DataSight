@@ -13,8 +13,8 @@ import psycopg2.extras
 from datasight import config
 from datasight.application.bounded_extraction import BoundedExtractionEngine, PROMPT_VERSION as BOUNDED_PROMPT_VERSION
 from datasight.application.extraction_engine import CHUNK_CHARACTERS, LOCATOR_BLOCK_TOKENS, OVERLAP_CHARACTERS, ExtractionEngine
-from datasight.application.fast_extraction import (
-    FAST_PROMPT_VERSIONS, PROMPT_VERSION as FAST_PROMPT_VERSION, run_fast_extraction,
+from datasight.application.catalog_extraction import (
+    CATALOG_PROMPT_VERSIONS, PROMPT_VERSION as CATALOG_PROMPT_VERSION, run_catalog_extraction,
 )
 from datasight.application.whole_document_extraction import (
     PROMPT_VERSION as WHOLE_DOCUMENT_PROMPT_VERSION,
@@ -37,13 +37,13 @@ def extraction_configuration(
     legacy: bool | None = None, *, render_profile: RenderProfile = DEFAULT_RENDER_PROFILE,
 ) -> dict[str, Any]:
     if legacy is None:
-        strategy = os.getenv('LLM_EXTRACTION_STRATEGY', 'fast')
-        if strategy == 'fast':
-            return fast_configuration(render_profile)
+        strategy = os.getenv('LLM_EXTRACTION_STRATEGY', 'catalog')
+        if strategy in {'catalog', 'fast'}:
+            return catalog_configuration(render_profile)
         if strategy == 'whole_document':
             return whole_document_configuration()
         if strategy not in {'legacy', 'bounded'}:
-            raise ValueError('LLM_EXTRACTION_STRATEGY must be fast, whole_document, bounded, or legacy')
+            raise ValueError('LLM_EXTRACTION_STRATEGY must be catalog, whole_document, bounded, or legacy')
         legacy = strategy == 'legacy'
     settings = {
         "schema_version": SCHEMA_VERSION,
@@ -91,7 +91,7 @@ def whole_document_configuration() -> dict[str, Any]:
     }
 
 
-def fast_configuration(render_profile: RenderProfile, prompt_version: str = FAST_PROMPT_VERSION) -> dict[str, Any]:
+def catalog_configuration(render_profile: RenderProfile, prompt_version: str = CATALOG_PROMPT_VERSION) -> dict[str, Any]:
     return {
         **whole_document_configuration(),
         "prompt_version": prompt_version,
@@ -102,7 +102,7 @@ def fast_configuration(render_profile: RenderProfile, prompt_version: str = FAST
 
 def supported_extraction_configurations() -> tuple[dict[str, Any], ...]:
     return (
-        *(fast_configuration(profile, version) for version in FAST_PROMPT_VERSIONS for profile in ("pruned", "full_body")),
+        *(catalog_configuration(profile, version) for version in CATALOG_PROMPT_VERSIONS for profile in ("pruned", "full_body")),
         whole_document_configuration(), extraction_configuration(legacy=False), extraction_configuration(legacy=True),
     )
 
@@ -143,7 +143,7 @@ def freeze_source(raw: bytes, profile: RenderProfile | None = None) -> tuple[Pat
     return destination, digest
 
 
-def prepare_fast_source(row: dict[str, Any], profile: RenderProfile) -> tuple[str, Path, str]:
+def prepare_catalog_source(row: dict[str, Any], profile: RenderProfile) -> tuple[str, Path, str]:
     metadata = row.get("markdown_metadata") or {}
     if not row.get("markdown_path") or metadata.get("profile") != profile or metadata.get("producer_version") != RENDERER_VERSION:
         raise ValueError(f"No detected {profile} Markdown is available")
@@ -201,14 +201,14 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
     settings = run_config.get("extraction") or (previous or {}).get("config") or extraction_configuration(
         render_profile=run_config.get("render_profile", DEFAULT_RENDER_PROFILE),
     )
-    fast = settings.get("prompt_version") in FAST_PROMPT_VERSIONS
+    catalog = settings.get("prompt_version") in CATALOG_PROMPT_VERSIONS
     try:
         if previous and previous.get("source_path"):
             if previous["config"] != settings:
                 raise ValueError("Extraction configuration changed; start a new run")
             path = Path(previous["source_path"])
             digest = previous["source_sha256"]
-            if fast:
+            if catalog:
                 if digest != row.get("markdown_sha256"):
                     raise ValueError("The detected Markdown changed since extraction started; start a new run")
                 text = read_frozen_source(str(path), digest)
@@ -216,8 +216,8 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
                 if sha256_file(path) != digest:
                     raise ValueError("Immutable source snapshot has changed")
                 text = path.read_text(encoding="utf-8")
-        elif fast:
-            text, path, digest = prepare_fast_source(row, settings["render_profile"])
+        elif catalog:
+            text, path, digest = prepare_catalog_source(row, settings["render_profile"])
         else:
             text, path, digest = row.get('_prepared_source') or prepare_source(row)
     except Exception as exc:
@@ -245,8 +245,8 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
     artifact_id = repo.cursor.fetchone()["id"]
     repo.attach_extraction_source(extraction_id, str(path), digest, artifact_id)
     try:
-        if fast:
-            result = run_fast_extraction(
+        if catalog:
+            result = run_catalog_extraction(
                 repo, client, extraction_id, text, row["paper_id"], digest, prompt_version=settings["prompt_version"],
             )
         elif settings["prompt_version"] == WHOLE_DOCUMENT_PROMPT_VERSION:
@@ -308,7 +308,7 @@ def extract_run(run_id: int | None, limit: int | None = None, publication_id: in
             repo.record_stage_start("extract_features", run_id)
             results: list[dict[str, Any]] = []
             frozen = (run.get("config") or {}).get("extraction") or {}
-            if frozen.get("prompt_version") in FAST_PROMPT_VERSIONS:
+            if frozen.get("prompt_version") in CATALOG_PROMPT_VERSIONS:
                 prepared = repo.extraction_publications(
                     run_id, limit, publication_id, render_profile=frozen["render_profile"],
                     renderer_version=frozen["renderer_version"],

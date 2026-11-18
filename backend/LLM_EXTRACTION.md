@@ -23,7 +23,7 @@ LLM_API_KEY=<existing gateway secret>
 LLM_MODEL=Qwen/Qwen3.8-27B
 LLM_MODEL_REVISION=1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 LLM_TIMEOUT_SEC=195
-LLM_EXTRACTION_STRATEGY=fast
+LLM_EXTRACTION_STRATEGY=catalog
 LLM_INFERENCE_CONCURRENCY=4
 ```
 
@@ -40,16 +40,19 @@ publication tasks it can run at once. Ordinary pipeline work uses the existing
 worker. Do not run a local resume concurrently with queued extraction of the
 same run.
 
-Start a **new run** from the GUI to use the `fast` default. Open
+Start a **new run** from the GUI to use the default catalog extractor. Open
 **Dataset extraction** on the run page and select a paper to inspect its
-candidates and exact source evidence. Fast extraction uses the run's renderer
+candidates and exact source evidence. Catalog extraction uses the run's renderer
 profile, which defaults to `pruned`. It verifies and freezes the same Markdown
 hash that passed mention detection.
 
-Fast extraction sends one compact request if the rendered source fits. It plans larger
+Catalog extraction sends one compact request if the rendered source fits. It plans larger
 papers locally in contiguous chunks, using the actual serialized prompt and
 pinned tokenizer. A truncated chunk is split once during the initial run.
-New runs collect catalog identity fields during this scan. Each populated value
+New runs use `catalog-v4` to collect dataset identity fields and explicit
+current-paper roles (created, used, comparison, discussed). Bibliography-only
+evidence cannot establish a role. A model-reported incomplete scan uses the same
+bounded chunk splitting as a truncated response. Each populated value
 cites a line in that dataset's evidence. Possible data deposits in the rendered
 bibliography are highlighted in the same request. Unsupported values are
 omitted and flagged on the candidate for review.
@@ -57,7 +60,7 @@ On explicit resume, a saved truncated half can be split once more. Fast v1 runs
 can use compact output as a fallback for a saved terminal truncation. Successful
 chunks are checkpointed, and incomplete papers show a failure reason in the
 panel. Candidates with valid evidence and an unsupported name are retained as
-unnamed and marked for review. Fast v2 merges clear repeated names across
+unnamed and marked for review. The catalog extractor merges clear repeated names across
 chunks, preserves their occurrences, and keeps ambiguous identities and
 conflicting versions separate. It resolves uniquely mapped dataset table
 labels and narrows shared table evidence when a unique matching cell exists.
@@ -125,8 +128,8 @@ interrupted run into a successful one.
 ## Contract
 
 The typed source of truth is `datasight.domain.extraction`. The schema version is
-`dataset-evidence-v2`. New fast runs use `fast-catalog-v3`. Existing fast v1
-and v2 runs resume with their original prompts and checkpoints.
+`dataset-evidence-v2`. Existing runs resume with their saved prompts and
+checkpoints. The old `fast` environment setting is an alias for `catalog`.
 The bounded strategy collects dataset identity and use evidence. FAIR attributes are deferred
 until after catalogue matching. Earlier completed `v1` results remain readable;
 an incomplete `v1` run needs a new run to use the changed contract.
@@ -170,7 +173,7 @@ necessary.
 
 ## Matching boundary
 
-Fast extraction captures names, aliases, dataset DOIs and Handles, landing and
+Catalog extraction captures names, aliases, dataset DOIs and Handles, landing and
 download URLs, accessions, repositories, creators and dataset release years.
 Versions, subsets, access dates and short descriptions of the population,
 collection site or measurements help a reviewer distinguish similar records.
@@ -214,7 +217,7 @@ against the configured model revision; an unavailable or mismatched tokenizer fa
 extraction explicitly. Changed block and prompt budgets require a new run; completed
 older results remain readable.
 The prompt character count includes message roles. If the gateway reports a
-lower character limit, fast extraction replans oversized chunks for that paper
+lower character limit, catalog extraction replans oversized chunks for that paper
 and saves the reported limit for resume.
 
 Bounded and legacy feature requests use relevant passages and bibliography context.
@@ -225,7 +228,7 @@ still fail explicitly. Oversized/truncated work is also subdivided. Responses re
 the configured served model, a normal stop, strict schema and source validation.
 
 Bounded and legacy transient failures have at most three attempts per work unit
-per invocation. Fast extraction sends one attempt per chunk and uses smaller
+per invocation. Catalog extraction sends one attempt per chunk and uses smaller
 chunks to recover from output truncation. A 503 interrupts immediately.
 Publication results become visible atomically only after every required request
 validates. Requests/attempts remain in PostgreSQL for inspection on failure.

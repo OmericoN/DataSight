@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { SegmentedControl } from "glisse";
 import {
   RiArrowDownSLine,
   RiCheckLine,
@@ -158,9 +159,9 @@ export default function DiscoveryLaunchPage() {
     <form className="@container mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6 pb-16" onSubmit={submit}>
       <section className="grid gap-3" aria-labelledby="strategy-heading">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h2 id="strategy-heading" className="text-xl font-semibold tracking-tight">Discovery strategy</h2>
+          <h2 id="strategy-heading" className="text-2xl font-semibold tracking-tight @sm:text-[1.75rem]">Discovery strategy</h2>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            {openAlex?.available ? <span className="inline-flex items-center gap-1"><RiCheckLine className="size-3.5" aria-hidden="true" /> OpenAlex ready</span> : null}
+            {openAlex?.available ? <span className="inline-flex items-center gap-1 text-status-success"><RiCheckLine className="size-3.5" aria-hidden="true" /> OpenAlex ready</span> : null}
             {statusQuery.isPending ? <span>Checking OpenAlex…</span> : null}
             {profile?.dataset_count ? <span>{profile.dataset_count.toLocaleString()} UM datasets</span> : null}
           </div>
@@ -258,14 +259,14 @@ export default function DiscoveryLaunchPage() {
         </>
       ) : null}
 
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-end gap-2 border-t bg-background/95 px-3 py-2 backdrop-blur @4xl:static @4xl:border-0 @4xl:bg-transparent @4xl:p-0">
+      <div className="app-glass pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-end gap-2 border-t px-3 py-2 @4xl:static @4xl:border-0 @4xl:bg-transparent @4xl:bg-none @4xl:p-0 @4xl:shadow-none @4xl:backdrop-filter-none">
         {launchJob.phase === "discovering" ? (
-          <Button className="pointer-events-auto" type="button" variant="outline" onClick={launchJob.cancel}>
+          <Button className="pointer-events-auto h-10 rounded-full px-4" type="button" variant="outline" onClick={launchJob.cancel}>
             <RiStopCircleLine data-icon="inline-start" aria-hidden="true" />
             Cancel launch
           </Button>
         ) : null}
-        <Button className="pointer-events-auto min-w-36" type="submit" disabled={launchJob.isPending || previewMutation.isPending || blocked || manualMissing}>
+        <Button className="launch-primary pointer-events-auto h-10 min-w-36 rounded-full px-4" type="submit" disabled={launchJob.isPending || previewMutation.isPending || blocked || manualMissing}>
           {launchJob.isPending ? <RiLoader4Line className="animate-spin" data-icon="inline-start" aria-hidden="true" /> : <RiPlayLine data-icon="inline-start" />}
           {launchJob.phase === "starting" ? "Opening workspace…" : launchJob.phase === "discovering" ? mode === "random" ? "Drawing sample…" : "Preparing discovery…" : previewMutation.isPending ? mode === "random" ? "Drawing sample…" : "Preparing preview…" : "Run pipeline"}
         </Button>
@@ -284,37 +285,43 @@ function StrategySelector({ mode, onChange }: { mode: DiscoveryMode; onChange: (
     { mode: "manual", label: "Manual", description: "Search OpenAlex with a query you provide.", icon: RiSearchLine },
   ];
   return (
-    <div className="grid gap-2">
-      <div className="grid max-w-md grid-cols-3 gap-1 rounded-lg border bg-muted/35 p-1" role="group" aria-labelledby="strategy-heading">
-        {options.map(({ mode: option, label, icon: Icon }) => (
-          <Button
-            key={option}
-            type="button"
-            variant="ghost"
-            aria-pressed={option === mode}
-            onClick={() => onChange(option)}
-            className="h-10 min-w-0 gap-2 px-1 text-muted-foreground aria-pressed:border-border aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-foreground aria-pressed:shadow-xs"
-          >
-            <Icon aria-hidden="true" className="group-aria-pressed/button:text-primary" />
-            {label}
-          </Button>
-        ))}
-      </div>
-      <p className="text-sm text-muted-foreground" aria-live="polite">{options.find((option) => option.mode === mode)?.description}</p>
+    <div className="grid justify-items-start gap-2">
+      <SegmentedControl
+        aria-labelledby="strategy-heading"
+        className="strategy-control"
+        value={mode}
+        items={options.map(({ mode: value, label, icon: Icon }) => ({
+          value,
+          label: <span className="inline-flex translate-y-[3px] items-center gap-1 text-base leading-none"><Icon className="size-4" aria-hidden="true" />{label}</span>,
+        }))}
+        onValueChange={(value) => {
+          const option = options.find((item) => item.mode === value);
+          if (option && option.mode !== mode) onChange(option.mode);
+        }}
+      />
+      <p className="text-center text-[0.9375rem] leading-6 text-muted-foreground" aria-live="polite">{options.find((option) => option.mode === mode)?.description}</p>
     </div>
   );
 }
 
 function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loading, mode, preview, onPreview }: { blocked: boolean; estimatedCalls: number | undefined; estimatedCost: number | undefined; excluded: number; loading: boolean; mode: DiscoveryMode; preview: Awaited<ReturnType<typeof api.discoveryPreview>> | undefined; onPreview: () => void }) {
   return (
-    <section aria-labelledby="preview-heading" className="grid gap-3 rounded-xl border bg-card p-4 text-card-foreground @4xl:sticky @4xl:top-20">
+    <section aria-labelledby="preview-heading" className="activity-surface grid gap-4 bg-card p-5 text-card-foreground @4xl:sticky @4xl:top-22">
       <div className="flex items-center gap-1">
         <h2 id="preview-heading" className="text-base font-semibold">Preview</h2>
         <HelpHint label="Preview" text={mode === "random" ? "Previewing uses OpenAlex credits. Leaving the seed blank draws a fresh sample." : "Previewing uses OpenAlex credits and leaves PDF processing for the pipeline run."} />
       </div>
       <div className="grid gap-2 text-sm tabular-nums">
-        <SummaryLine label="Estimated API calls" value={estimatedCalls?.toLocaleString() ?? "—"} />
-        <SummaryLine label="Estimated OpenAlex cost" value={estimatedCost === undefined ? "—" : `$${estimatedCost.toFixed(3)}`} />
+        <dl className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+          <div>
+            <dt className="text-xs text-muted-foreground">Estimated OpenAlex cost</dt>
+            <dd className="text-[1.75rem] leading-tight font-medium tracking-tight text-brand-ink">{estimatedCost === undefined ? "—" : `$${estimatedCost.toFixed(3)}`}</dd>
+          </div>
+          <div className="border-l pl-3">
+            <dt className="text-xs text-muted-foreground">Est. API calls</dt>
+            <dd className="text-lg font-medium text-blue-ink">{estimatedCalls?.toLocaleString() ?? "—"}</dd>
+          </div>
+        </dl>
         {preview ? (
           <div className="grid gap-2 border-t pt-2">
             <SummaryLine label="Candidates retained" value={String(preview.candidate_count)} />
@@ -327,8 +334,8 @@ function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loa
           </div>
         ) : null}
       </div>
-      {preview?.partial ? <p className="text-xs text-amber-700 dark:text-amber-300">This is a partial preview. Check its warnings before launching.</p> : null}
-      <Button type="button" variant="outline" onClick={onPreview} disabled={blocked || loading}>
+      {preview?.partial ? <p className="text-xs text-status-warning">This is a partial preview. Check its warnings before launching.</p> : null}
+      <Button type="button" variant="ghost" className="app-glass rounded-full border-(--glass-edge) text-blue-ink" onClick={onPreview} disabled={blocked || loading}>
         {loading ? "Previewing results…" : preview ? "Refresh results" : "Preview results"}
       </Button>
     </section>

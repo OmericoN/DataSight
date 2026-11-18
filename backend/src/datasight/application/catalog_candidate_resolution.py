@@ -102,6 +102,8 @@ def refine_candidates(text: str, groups: list[dict[str, Any]], evidence: list[di
         for index, evidence_id in enumerate(group["evidence_ids"]):
             item = by_id[evidence_id]
             names = names_by_evidence[evidence_id]
+            if any(evidence_id in ids for ids in group.get("roles", {}).values()):
+                continue
             if item["placement"] != "table" or len(names) < 2:
                 continue
             matches = [(offset, cell) for offset, cell in table_cells(item["quote"]) if name in cell]

@@ -1,6 +1,6 @@
 # Stage A whole-document extraction
 
-New GUI runs on this branch use fast extraction. The commands below compare the
+New GUI runs on this branch use catalog extraction. The commands below compare the
 original single-request Stage A baseline with bounded extraction on the same
 frozen publication. The replay CLI without a strategy flag selects bounded extraction.
 

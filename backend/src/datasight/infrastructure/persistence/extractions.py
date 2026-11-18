@@ -7,7 +7,7 @@ from typing import Any
 import psycopg2.extras
 
 from datasight.domain.candidate_detection import DETECTOR_VERSION
-from datasight.domain.extraction import PublicationExtraction
+from datasight.domain.extraction import PublicationExtraction, referenced_evidence_ids
 
 
 class ExtractionRepositoryMixin:
@@ -213,6 +213,7 @@ class ExtractionRepositoryMixin:
                 dataset_ids = [item.value.literal for item in dataset.identity.identifiers.values if item.value.target == "dataset"] if dataset.identity.identifiers.state == "reported" else []
                 dataset_urls = [item.value.url for item in dataset.identity.urls.values if item.value.target in {"landing_page", "download"}] if dataset.identity.urls.state == "reported" else []
                 feature_dict = dataset.model_dump(mode="json")
+                dataset_evidence_ids = referenced_evidence_ids(feature_dict)
                 metadata = {
                     "persistent_identifier": dataset_ids[0] if len(dataset_ids) == 1 else None,
                     "dataset_identifiers": dataset_ids,
@@ -232,7 +233,7 @@ class ExtractionRepositoryMixin:
                 """, (row["publication_id"], dataset.display_name, [item.value for item in dataset.identity.aliases.values] if dataset.identity.aliases.state == "reported" else [], role,
                       psycopg2.extras.Json({"body_quote": first.quote, "section_heading": first.section_heading,
                           "standardized_section": first.standardized_section, "occurrences": feature_dict["occurrences"],
-                          "passages": [e.model_dump(mode="json") for e in result.evidence]}),
+                          "passages": [e.model_dump(mode="json") for e in result.evidence if e.evidence_id in dataset_evidence_ids]}),
                       psycopg2.extras.Json(metadata), psycopg2.extras.Json(provenance), extraction_id, dataset.dataset_local_id))
             metrics = self.extraction_metrics(extraction_id)
             self.cursor.execute("""

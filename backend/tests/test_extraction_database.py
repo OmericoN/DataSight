@@ -73,6 +73,23 @@ def result():
         coverage={"source_characters": 5, "covered_characters": 5})
 
 
+def test_publish_scopes_passages_to_dataset():
+    from unittest.mock import MagicMock
+
+    repo = MagicMock()
+    repo.cursor.fetchone.return_value = {"publication_id": 1, "status": "running", "config": {}}
+    publication = result()
+    other = publication.evidence[0].model_copy(update={"evidence_id": "e2"})
+    support = other.model_copy(update={"evidence_id": "e3"})
+    publication.evidence.extend([other, support])
+    publication.datasets[0].identity.name = type(publication.datasets[0].identity.name).model_validate({
+        "state": "reported", "values": [{"value": "Alpha", "evidence_ids": ["e3"]}],
+    })
+    PipelineRepository.publish_extraction(repo, 1, publication)
+    insert = next(call for call in repo.cursor.execute.call_args_list if "INSERT INTO dataset_mentions" in call.args[0])
+    assert [item["evidence_id"] for item in insert.args[1][4].adapted["passages"]] == ["e1", "e3"]
+
+
 def test_migration_atomic_publish_zero_result_and_run_isolation(database):
     repo = database
     run1, run2, publication = seed(repo)
