@@ -578,8 +578,17 @@ describe("App routed workflow", () => {
   it("defaults to the launch page and navigates to runs", async () => {
     renderApp(defaultFetchMock(), "/launch");
 
-    expect(await screen.findByText("Choose a discovery strategy")).toBeInTheDocument();
-    expect(screen.getByText("Adaptive funnel")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Discovery strategy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Smart", pressed: true })).toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    const processHelp = screen.getByRole("button", { name: "About Process now" });
+    fireEvent.pointerMove(processHelp, { pointerType: "mouse" });
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("PDF-link target");
+    fireEvent.keyDown(processHelp, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    fireEvent.focus(processHelp);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("PDF-link target");
+    fireEvent.blur(processHelp);
     fireEvent.click(screen.getByRole("link", { name: /^Runs/ }));
 
     expect(await screen.findByText("Open a run to inspect the workspace, events, and stage metrics.")).toBeInTheDocument();
@@ -1034,7 +1043,7 @@ describe("App routed workflow", () => {
     const fetchMock = defaultFetchMock();
     renderApp(fetchMock, "/launch");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Select Random sample" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Random" }));
     expect(screen.getByLabelText("Random sample size")).toBeInTheDocument();
     expect(screen.getByLabelText("Sample seed")).toBeInTheDocument();
     expect(screen.queryByLabelText("Optional focus")).not.toBeInTheDocument();
@@ -1176,6 +1185,14 @@ describe("App routed workflow", () => {
       "data-edge-tone",
       "muted",
     );
+    const formalityNode = screen.getByRole("button", {
+      name: "Inspect Evaluate Formality status and filter events",
+    });
+    expect(formalityNode).toHaveTextContent("Evaluate Formality");
+    expect(formalityNode).toHaveTextContent("NULL");
+    fireEvent.click(formalityNode);
+    expect(container.querySelector("[data-datasight-inspector] [data-slot=card-title]"))
+      .toHaveTextContent("Evaluate Formality");
     const downloadNode = screen.getByLabelText("Inspect Download Pdf status and filter events");
     expect(downloadNode).toBeInTheDocument();
     fireEvent.click(downloadNode);
@@ -1234,7 +1251,7 @@ describe("App routed workflow", () => {
       expect(download).toHaveAccessibleDescription("Elapsed time: 00:02");
       expect(screen.getByRole("button", { name: /^Inspect Discover/ })).toHaveTextContent("1:01:02");
       expect(grobid).toHaveTextContent("—");
-      expect(screen.getByRole("button", { name: /^Inspect Export Insights/ })).toHaveTextContent("—");
+      expect(screen.getByRole("button", { name: /^Inspect Evaluate Formality/ })).toHaveTextContent("—");
     } finally {
       cleanup();
       vi.useRealTimers();

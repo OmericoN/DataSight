@@ -487,11 +487,13 @@ function PipelineShell() {
             <h1 className="truncate font-heading text-base font-medium">
               {title}
             </h1>
-            <p className="hidden text-xs text-muted-foreground sm:block">
-              {latestRun
-                ? `${latestRun.query || `Run ${latestRun.id}`} · Run #${latestRun.id}`
-                : "No run selected"}
-            </p>
+            {location.pathname !== "/launch" ? (
+              <p className="hidden text-xs text-muted-foreground sm:block">
+                {latestRun
+                  ? `${latestRun.query || `Run ${latestRun.id}`} · Run #${latestRun.id}`
+                  : "No run selected"}
+              </p>
+            ) : null}
           </div>
           <HealthPills
             health={healthQuery.data}

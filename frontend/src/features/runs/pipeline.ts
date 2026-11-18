@@ -113,7 +113,7 @@ export function stageStatusCounts(stages: VisualStage[]) {
 }
 
 export function formatStageName(value: string) {
-  return value.replaceAll("_", " ");
+  return value === "export_insights" ? "evaluate formality" : value.replaceAll("_", " ");
 }
 
 export type StatusTone = "default" | "success" | "warning" | "error" | "muted";
