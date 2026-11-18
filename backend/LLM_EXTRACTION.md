@@ -1,8 +1,10 @@
 # Dataset evidence extraction
 
 DataSight owns extraction; the DSRI gateway and vLLM backend remain generic.
-`extract_features` scans every selected publication, including papers with no
-rules-detector candidates. Automatic workflows still end at extraction.
+`extract_features` accepts only selected publications with a successful mention
+detection record for their rendered text. A successful scan with zero rule
+candidates qualifies. The detector reads Markdown, so HTML needs to be rendered
+to Markdown and pass the same scan. Automatic workflows still end at extraction.
 
 ## Run it
 
@@ -21,7 +23,7 @@ LLM_API_KEY=<existing gateway secret>
 LLM_MODEL=Qwen/Qwen3.8-27B
 LLM_MODEL_REVISION=1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
 LLM_TIMEOUT_SEC=195
-LLM_EXTRACTION_STRATEGY=bounded
+LLM_EXTRACTION_STRATEGY=fast
 LLM_INFERENCE_CONCURRENCY=4
 ```
 
@@ -32,16 +34,38 @@ in run configuration, checkpoints, browser requests, or diagnostic responses.
 The bundled tokenizer comes from the pinned [Qwen3.8-27B revision](https://huggingface.co/Qwen/Qwen3.8-27B/tree/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0)
 and ships with its [Apache 2.0 license](src/datasight/assets/QWEN-LICENSE.txt).
 
-Start the Compose `worker` and `llm-worker` services. The LLM worker uses one
+Start the Compose `api`, `worker`, and `llm-worker` services. The LLM worker uses one
 prefork process by default; `LLM_WORKER_CONCURRENCY` raises the number of
 publication tasks it can run at once. Ordinary pipeline work uses the existing
 worker. Do not run a local resume concurrently with queued extraction of the
 same run.
 
-New Markdown renders default to `pruned`. LLM extraction prepares a separate, content-addressed full-body
-snapshot from retained TEI, leaving pruned input untouched. A current, validated
-full-body Markdown artifact can be used if TEI is unavailable. Historical
-pruned-only papers without TEI produce an explicit preparation failure.
+Start a **new run** from the GUI to use the `fast` default. Open
+**Dataset extraction** on the run page and select a paper to inspect its
+candidates and exact source evidence. Fast extraction uses the run's renderer
+profile, which defaults to `pruned`. It verifies and freezes the same Markdown
+hash that passed mention detection.
+
+Fast extraction sends one compact request if the rendered source fits. It plans larger
+papers locally in contiguous chunks, using the actual serialized prompt and
+pinned tokenizer. A truncated chunk is split once during the initial run.
+New runs collect catalog identity fields during this scan. Each populated value
+cites a line in that dataset's evidence. Possible data deposits in the rendered
+bibliography are highlighted in the same request. Unsupported values are
+omitted and flagged on the candidate for review.
+On explicit resume, a saved truncated half can be split once more. Fast v1 runs
+can use compact output as a fallback for a saved terminal truncation. Successful
+chunks are checkpointed, and incomplete papers show a failure reason in the
+panel. Candidates with valid evidence and an unsupported name are retained as
+unnamed and marked for review. Fast v2 merges clear repeated names across
+chunks, preserves their occurrences, and keeps ambiguous identities and
+conflicting versions separate. It resolves uniquely mapped dataset table
+labels and narrows shared table evidence when a unique matching cell exists.
+The GUI shows candidate counts and total HTTP attempts alongside attempt progress.
+
+`LLM_EXTRACTION_STRATEGY=bounded` selects bounded extraction for new runs.
+Existing runs retain their frozen extractor and renderer settings. Bounded,
+legacy, and the original `whole_document` strategy use full-body snapshots.
 
 For an existing, inactive run:
 
@@ -59,7 +83,7 @@ Changed extraction settings require a new run. A successful zero result is a
 completed checkpoint, not permission to repeat inference. An in-flight request
 lost before its checkpoint commits may need to be generated again.
 
-The default `bounded` strategy scans paragraph-aware blocks targeting 6,000 model
+The `bounded` strategy scans paragraph-aware blocks targeting 6,000 model
 tokens with 300 characters of overlap. It uses exact indexed source anchors and
 extracts shared fields once per provisional dataset group. It reuses a single
 answer when dataset and occurrence evidence are identical, and budgets batches
@@ -69,7 +93,7 @@ Keep the publication worker count in mind when changing this limit.
 Optional names that cannot be found verbatim in the source are retained as
 unnamed references for review. Public extraction fields remain unchanged.
 
-Both strategies now have per-invocation safety budgets: five minutes/50 HTTP
+The bounded and legacy strategies have per-invocation safety budgets of five minutes/50 HTTP
 attempts, or 15 minutes/100 attempts for sources over 60,000 characters or more
 than 30 located references. Retries and repairs count. A budget interruption
 publishes no partial result and exposes `extraction_budget_exceeded`; explicit
@@ -100,9 +124,10 @@ interrupted run into a successful one.
 
 ## Contract
 
-The typed source of truth is `datasight.domain.extraction`. Schema version:
-`dataset-evidence-v2`; default prompt version: `indexed-sparse-v16`.
-New results collect dataset identity and use evidence. FAIR attributes are deferred
+The typed source of truth is `datasight.domain.extraction`. The schema version is
+`dataset-evidence-v2`. New fast runs use `fast-catalog-v3`. Existing fast v1
+and v2 runs resume with their original prompts and checkpoints.
+The bounded strategy collects dataset identity and use evidence. FAIR attributes are deferred
 until after catalogue matching. Earlier completed `v1` results remain readable;
 an incomplete `v1` run needs a new run to use the changed contract.
 
@@ -145,33 +170,63 @@ necessary.
 
 ## Matching boundary
 
-Extraction retains identity, use, occurrence, and citation evidence. It does not
-assess FAIR attributes or verify an external repository. Catalogue matching is a
-separate stage; FAIR assessment can follow a supported match.
+Fast extraction captures names, aliases, dataset DOIs and Handles, landing and
+download URLs, accessions, repositories, creators and dataset release years.
+Versions, subsets, access dates and short descriptions of the population,
+collection site or measurements help a reviewer distinguish similar records.
+Bounded extraction also collects use and citation evidence.
+
+The matcher checks direct identifiers and URLs across the catalog. Conflicting
+record hits require review. Paper aliases participate in title comparison,
+including UM collection titles prefixed with “Data From”. A name or alias match
+remains reviewable. Creator and year overlap support the existing similarity
+score. Catalog matching remains a separate stage.
+
+### GPU development check, 18 November 2026
+
+Both prompt versions ran on the same pruned Markdown snapshots through the
+configured Qwen gateway. Each replay started with empty in-memory checkpoints.
+Times include planning, HTTP inference and grounding. They exclude ingestion,
+queueing and PostgreSQL writes. Extra values count individual grounded
+identity observations beyond the primary name.
+
+| Paper | Version | Candidates | Extra values | HTTP calls | Output tokens | Seconds |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| W4221072223 | fast v2 | 2 | 0 | 1 | 94 | 4.53 |
+| W4221072223 | fast v3 | 2 | 3 | 1 | 122 | 4.42 |
+| W4392850630 | fast v2 | 7 | 0 | 2 | 244 | 10.45 |
+| W4392850630 | fast v3 | 8 | 27 | 2 | 744 | 23.91 |
+
+The v3 alias `NSCLC-Radiomics` on `LUNG1` returned `W6977944434` (“Data From
+NSCLC-Radiomics”) for review against the 2,748-record UM export. The extractor
+also recovered accession `GSE103584` and the independently cited Stanford
+deposit DOI `10.7937/K9/TCIA.2014.X7ONY6B1`. Some descriptions repeated study
+details. These development papers were used for prompt tuning. The held-out
+evaluation below is still needed to estimate precision, recall and throughput.
 
 ## Requests, persistence and inspection
 
-The default locator scans overlapping source blocks targeting 6,000 tokens from the
-pinned Qwen tokenizer, with paragraph-boundary preference and 300-character overlap.
-The opt-in bounded locator retains its indexed 6,000-character segmentation.
-Both use exact model-token counts for the full prompt, reserving 2,048 output tokens
-and 1,024 template tokens within the 16,384-token context and 40,000-character
-gateway limit. Oversized blocks are subdivided. The tokenizer is bundled and checked
+All strategies measure the serialized prompt with the pinned Qwen tokenizer.
+The worker reserves 2,048 output tokens and 1,024 template tokens within the
+16,384-token context, leaving 13,312 prompt tokens. The gateway also limits
+prompts to 40,000 characters. The tokenizer is bundled and checked
 against the configured model revision; an unavailable or mismatched tokenizer fails
 extraction explicitly. Changed block and prompt budgets require a new run; completed
 older results remain readable.
-Deploy the gateway's 40,000-character cap before starting a run with this worker;
-an older gateway can reject a request that passes the worker's local budget.
+The prompt character count includes message roles. If the gateway reports a
+lower character limit, fast extraction replans oversized chunks for that paper
+and saves the reported limit for resume.
 
-Feature requests use relevant passages and bibliography context.
+Bounded and legacy feature requests use relevant passages and bibliography context.
 Invalid locator or feature completions get one stricter grounding request before
 bounded subdivision. At the minimum block size, a line-indexed locator can
 select exact source lines without copying their text; invalid indices or names
 still fail explicitly. Oversized/truncated work is also subdivided. Responses require
 the configured served model, a normal stop, strict schema and source validation.
 
-Transient failures have at most three attempts per work unit per invocation.
-503 interrupts immediately. Long Retry-After waits require later manual resume.
+Bounded and legacy transient failures have at most three attempts per work unit
+per invocation. Fast extraction sends one attempt per chunk and uses smaller
+chunks to recover from output truncation. A 503 interrupts immediately.
 Publication results become visible atomically only after every required request
 validates. Requests/attempts remain in PostgreSQL for inspection on failure.
 No numeric LLM confidence, FAIR score or formality score is generated.

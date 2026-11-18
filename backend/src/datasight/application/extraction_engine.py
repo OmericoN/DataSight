@@ -142,7 +142,7 @@ def evidence_for(text: str, block: Block, passage: contract.LocatedPassage) -> c
     start, end = anchor_passage(text, block, passage)
     first_line_end = text.find("\n", start)
     headings = list(re.finditer(r"(?m)^#{1,6} (.+)$", text[:max(start + 1, first_line_end + 1)]))
-    heading = headings[-1].group(1) if headings else None
+    heading = headings[-1].group(1).removesuffix("\r") if headings else None
     lowered = (heading or "").casefold()
     placement: contract.Placement = "body"
     line_start = text.rfind("\n", 0, start) + 1

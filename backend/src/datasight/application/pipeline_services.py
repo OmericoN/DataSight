@@ -560,7 +560,7 @@ def extract_features_pipeline_item(
     result = extract_run(context["pipeline_run_id"], publication_id=context["publication_row_id"])
     with PipelineRepository() as repo:
         status = result["status"]
-        item_status = "successful" if status == "successful" else "interrupted" if status == "interrupted" else "failed"
+        item_status = status if status in {"successful", "interrupted", "skipped"} else "failed"
         repo.finish_item_stage(item_id, PipelineStage.EXTRACT_FEATURES, item_status, result)
     return {**result, "item_id": item_id}
 

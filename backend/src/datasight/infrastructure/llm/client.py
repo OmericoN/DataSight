@@ -31,7 +31,9 @@ class InferenceUnavailable(InferenceError):
 
 
 class RequestTooLarge(InferenceError):
-    pass
+    def __init__(self, message: str, *, max_prompt_chars: int | None = None) -> None:
+        super().__init__(message)
+        self.max_prompt_chars = max_prompt_chars
 
 
 class OutputTruncated(InferenceError):
@@ -65,17 +67,26 @@ def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
     return schema
 
 
-def payload_for(instructions: str, data: Any, model: type[BaseModel]) -> dict[str, Any]:
+def prompt_character_count(messages: list[dict[str, str]]) -> int:
+    return sum(len(value) for message in messages for value in message.values())
+
+
+def payload_for(
+    instructions: str, data: Any, model: type[BaseModel], *, max_prompt_chars: int | None = None,
+) -> dict[str, Any]:
     schema = strict_schema(model)
     system = instructions + "\nReturn only JSON matching this schema:\n" + json.dumps(schema, separators=(",", ":"))
     user = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    if prompt_character_count(messages) > (max_prompt_chars if max_prompt_chars is not None else MAX_PROMPT_CHARS):
+        raise RequestTooLarge("Request exceeds the conservative context budget")
     # Count model tokens in both messages; reserve chat-template overhead and output.
     prompt_tokens = count_tokens(system) + count_tokens(user)
-    if len(system) + len(user) > MAX_PROMPT_CHARS or prompt_tokens + MAX_TOKENS + TEMPLATE_RESERVE > CONTEXT_TOKENS:
+    if prompt_tokens + MAX_TOKENS + TEMPLATE_RESERVE > CONTEXT_TOKENS:
         raise RequestTooLarge("Request exceeds the conservative context budget")
     return {
         "model": config.LLM_MODEL,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "messages": messages,
         "temperature": 0,
         "stream": False,
         "max_tokens": MAX_TOKENS,
@@ -147,10 +158,13 @@ class GatewayClient:
         response_model: type[R],
         record_attempt: Callable[[dict[str, Any]], None],
         validate: Callable[[R], None],
+        *,
+        single_attempt: bool = False,
     ) -> R:
         if not config.LLM_BASE_URL or not config.LLM_API_KEY:
             raise InferenceError("LLM_BASE_URL and LLM_API_KEY are required")
-        for attempt in range(3):
+        max_attempts = 1 if single_attempt else 3
+        for attempt in range(max_attempts):
             self._worker.retry = attempt > 0
             remaining = self.before_attempt() if self.before_attempt else config.LLM_TIMEOUT_SEC
             started = time.monotonic()
@@ -163,7 +177,13 @@ class GatewayClient:
                 connect_timeout = min(5, remaining / 2)
                 read_timeout = min(config.LLM_TIMEOUT_SEC, max(.001, remaining-connect_timeout))
                 session = getattr(self._worker, "session", self.session)
-                response = session.post(config.LLM_BASE_URL + "/v1/chat/completions", json=payload, headers=self._headers(), timeout=(connect_timeout, read_timeout))
+                response = session.post(
+                    config.LLM_BASE_URL + "/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=(connect_timeout, read_timeout),
+                    allow_redirects=not single_attempt,
+                )
                 status = response.status_code
                 try:
                     response_data = response.json()
@@ -175,6 +195,8 @@ class GatewayClient:
                     raise RequestTooLarge("Gateway rejected request size")
                 if status == 400:
                     match response_data:
+                        case {"detail": {"error": {"code": "prompt_too_large"}, "max_prompt_chars": limit}} if type(limit) is int and limit > 0:
+                            raise RequestTooLarge(f"Gateway rejected prompt size (limit {limit} characters)", max_prompt_chars=limit)
                         case {"detail": {"error": {"code": "prompt_too_large"}}}:
                             raise RequestTooLarge("Gateway rejected prompt size")
                 if status is not None and (status == 429 or status >= 500):
@@ -212,7 +234,7 @@ class GatewayClient:
                 record_attempt({"http_status": status, "response": response_data, "elapsed_seconds": time.monotonic() - started, "error": None})
                 return parsed
             record_attempt({"http_status": status, "response": response_data, "elapsed_seconds": time.monotonic() - started, "error": str(error)})
-            if not retry or attempt == 2:
+            if not retry or attempt + 1 == max_attempts:
                 raise error or InferenceError("Inference failed")
             # Long server-requested waits require an explicit later resume.
             if delay > 60:

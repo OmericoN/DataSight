@@ -151,6 +151,17 @@ def test_whole_publication_service_persists_and_resumes_with_frozen_source(datab
     xml.write_text('<TEI xmlns="http://www.tei-c.org/ns/1.0"><text><body><p>We used the Alpha cohort. Access is controlled.</p></body></text></TEI>')
     repo.cursor.execute("INSERT INTO artifacts(publication_id,artifact_type,path) VALUES (%s,'tei_xml',%s)", (publication, str(xml)))
     repo.conn.commit()
+    assert repo.extraction_publications(run1) == []
+    repo.cursor.execute("""INSERT INTO artifacts(publication_id,artifact_type,path,sha256)
+        VALUES (%s,'markdown',%s,'rendered-hash') RETURNING id""", (publication, str(tmp_path / "paper.md")))
+    markdown_id = repo.cursor.fetchone()["id"]
+    stale = repo.begin_detection_run(publication, markdown_id, "old-hash")
+    repo.finish_detection_run(stale, 1)
+    detected = repo.begin_detection_run(publication, markdown_id, "rendered-hash")
+    assert repo.extraction_publications(run1) == []
+    repo.fail_detection_run(detected, "detector error")
+    assert repo.extraction_publications(run1) == []
+    repo.finish_detection_run(detected, 0)
     row = repo.extraction_publications(run1)[0]
     client = GroundedClient()
     assert llm_extraction.extract_publication(repo, client, run1, row)["status"] == "successful"

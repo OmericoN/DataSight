@@ -67,15 +67,16 @@ export function ExtractionPanel({ run }: { run: PipelineRunSummary }) {
     {summaries.isError ? <Alert variant="destructive"><AlertDescription>Extraction outcomes could not be loaded: {errorText(summaries.error)}</AlertDescription></Alert> : null}
     {summaries.isPending ? <p role="status" className="p-4 text-sm text-muted-foreground">Loading extraction outcomes…</p> : null}
     {summaries.data ? <>
-      <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Publication</TableHead><TableHead>Extraction</TableHead><TableHead>Datasets</TableHead></TableRow></TableHeader>
+      <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Publication</TableHead><TableHead>Extraction</TableHead><TableHead>Candidates</TableHead></TableRow></TableHeader>
         <TableBody>{summaries.data.items.map(item => <TableRow key={item.paper_id}>
           <TableCell className="min-w-56 max-w-md whitespace-normal">
             {item.id !== null ? <Button variant="link" className="h-auto max-w-full justify-start whitespace-normal p-0 text-left" onClick={() => setSelected(item.id)}>{item.title}</Button> : item.title}
             <p className="mt-1 text-xs text-muted-foreground">{item.paper_id}</p>
             {item.error ? <p className="mt-1 text-xs text-destructive">{item.error}</p> : null}
           </TableCell>
-          <TableCell><Badge variant={item.status === "failed" ? "destructive" : "outline"}>{item.status === "successful" ? item.dataset_count ? "Completed with datasets" : "Completed · zero datasets" : label(item.status)}</Badge>
-            {item.progress ? <p className="mt-1 text-xs text-muted-foreground">{label(item.progress.phase)} · {item.progress.attempts_this_invocation}/{item.progress.call_limit} calls · {Math.round(item.progress.elapsed_seconds)}s / {item.progress.time_limit_seconds}s</p> : null}
+          <TableCell><Badge variant={item.status === "failed" ? "destructive" : "outline"}>{item.status === "successful" ? item.dataset_count ? "Completed with candidates" : "Completed · zero candidates" : label(item.status)}</Badge>
+            {item.progress ? <p className="mt-1 text-xs text-muted-foreground">{label(item.progress.phase)} · {item.progress.attempts_this_invocation}/{item.progress.call_limit} calls this attempt · {Math.round(item.progress.elapsed_seconds)}s / {item.progress.time_limit_seconds}s</p> : null}
+            {item.id !== null && item.total_attempts !== undefined ? <p className="mt-1 text-xs text-muted-foreground">{item.total_attempts} total HTTP {item.total_attempts === 1 ? "attempt" : "attempts"}</p> : null}
             {item.error_category === 'extraction_budget_exceeded' ? <p className="text-xs">Processing budget reached. Saved checkpoints can be resumed.</p> : null}
           </TableCell>
           <TableCell>{item.status === "successful" ? item.dataset_count : "—"}</TableCell>

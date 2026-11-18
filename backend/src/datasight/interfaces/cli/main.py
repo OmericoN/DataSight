@@ -92,7 +92,9 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if args.command in {"extract", "resume-extractions"}:
-        from datasight.application.llm_extraction import extraction_configuration, queue_resume, require_compatible_run, resume_extraction
+        from datasight.application.llm_extraction import (
+            queue_resume, require_compatible_run, resume_extraction, supported_extraction_configurations,
+        )
         from datasight.infrastructure.persistence.repository import PipelineRepository
 
         if args.local:
@@ -101,7 +103,8 @@ def main() -> None:
                     raise ValueError("This run already has active extraction")
                 require_compatible_run(repo, args.run_id)
                 repo.cursor.execute("SELECT config FROM publication_extractions WHERE pipeline_run_id=%s", (args.run_id,))
-                if any(row["config"] not in (extraction_configuration(legacy=False), extraction_configuration(legacy=True)) for row in repo.cursor.fetchall()):
+                supported = supported_extraction_configurations()
+                if any(row["config"] not in supported for row in repo.cursor.fetchall()):
                     raise ValueError("Extraction configuration changed; start a new run")
                 repo.claim_extraction_resume(args.run_id)
             result = resume_extraction(args.run_id)
