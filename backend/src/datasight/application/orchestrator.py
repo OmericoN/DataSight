@@ -258,7 +258,7 @@ def _run_config(
         "renderer_version": RENDERER_VERSION,
         "render_profile": render_profile,
         "detector_version": DETECTOR_VERSION,
-        "extraction": extraction_configuration(),
+        "extraction": extraction_configuration(render_profile=render_profile),
         "processing_limit": processing_limit,
         "excluded_candidate_ids": excluded_candidate_ids or [],
         "output": output,

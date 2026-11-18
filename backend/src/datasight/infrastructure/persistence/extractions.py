@@ -6,6 +6,7 @@ from typing import Any
 
 import psycopg2.extras
 
+from datasight.domain.candidate_detection import DETECTOR_VERSION
 from datasight.domain.extraction import PublicationExtraction
 
 
@@ -13,26 +14,38 @@ class ExtractionRepositoryMixin:
     conn: Any
     cursor: Any
 
-    def extraction_publications(self, run_id: int, limit: int | None = None, publication_id: int | None = None) -> list[dict[str, Any]]:
+    def extraction_publications(
+        self, run_id: int, limit: int | None = None, publication_id: int | None = None,
+        *, render_profile: str | None = None, renderer_version: str | None = None,
+    ) -> list[dict[str, Any]]:
         query = """
             SELECT p.id AS publication_id, p.paper_id, p.title,
                    xml.path AS xml_path, md.id AS markdown_artifact_id,
                    md.path AS markdown_path, md.sha256 AS markdown_sha256, md.metadata AS markdown_metadata
             FROM publications p
+            JOIN pipeline_runs pr ON pr.id = %s
             LEFT JOIN LATERAL (
                 SELECT path FROM artifacts WHERE publication_id=p.id AND artifact_type='tei_xml'
                 ORDER BY created_at DESC,id DESC LIMIT 1
             ) xml ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT * FROM artifacts WHERE publication_id=p.id AND artifact_type='markdown'
-                ORDER BY created_at DESC,id DESC LIMIT 1
+            JOIN LATERAL (
+                SELECT a.* FROM artifacts a
+                WHERE a.publication_id=p.id AND a.artifact_type='markdown'
+                    AND (%s::text IS NULL OR (a.metadata->>'profile'=%s AND a.metadata->>'producer_version'=%s))
+                    AND EXISTS (
+                        SELECT 1 FROM mention_detection_runs dr
+                        WHERE dr.publication_id=p.id AND dr.markdown_artifact_id=a.id
+                            AND dr.render_sha256=a.sha256 AND dr.status='successful'
+                            AND dr.detector_version=COALESCE(pr.config->>'detector_version', %s)
+                    )
+                ORDER BY a.created_at DESC,a.id DESC LIMIT 1
             ) md ON TRUE
             WHERE EXISTS (
                 SELECT 1 FROM discovery_candidates dc
-                WHERE dc.pipeline_run_id=%s AND dc.publication_id=p.id AND dc.included AND dc.pipeline_ready
+                WHERE dc.pipeline_run_id=pr.id AND dc.publication_id=p.id AND dc.included AND dc.pipeline_ready
             )
         """
-        params: list[Any] = [run_id]
+        params: list[Any] = [run_id, render_profile, render_profile, renderer_version, DETECTOR_VERSION]
         if publication_id is not None:
             query += " AND p.id=%s"
             params.append(publication_id)
@@ -164,7 +177,7 @@ class ExtractionRepositoryMixin:
 
     def extraction_metrics(self, extraction_id: int) -> dict[str, Any]:
         self.cursor.execute("""SELECT count(*) AS attempts,
-            count(*) FILTER (WHERE a->>'error' LIKE 'Invalid completion:%'
+            count(*) FILTER (WHERE a->>'error' LIKE 'Invalid completion:%%'
                 OR a->>'error' = 'Completion reached its output limit') AS rejected_responses,
             COALESCE(sum((a->>'elapsed_seconds')::numeric),0) AS elapsed_seconds,
             COALESCE(sum((a->'usage'->>'prompt_tokens')::bigint),0)::bigint AS prompt_tokens,
@@ -202,7 +215,9 @@ class ExtractionRepositoryMixin:
                 feature_dict = dataset.model_dump(mode="json")
                 metadata = {
                     "persistent_identifier": dataset_ids[0] if len(dataset_ids) == 1 else None,
+                    "dataset_identifiers": dataset_ids,
                     "dataset_url": dataset_urls[0] if len(dataset_urls) == 1 else None,
+                    "dataset_urls": dataset_urls,
                     "dataset_authors": [item.value for item in dataset.identity.creators.values] if dataset.identity.creators.state == "reported" else [],
                     "dataset_year": dataset.identity.year.values[0].value if dataset.identity.year.state == "reported" and len(dataset.identity.year.values) == 1 else None,
                     "features": feature_dict,
@@ -252,6 +267,8 @@ class ExtractionRepositoryMixin:
             COALESCE(e.status,CASE WHEN upstream.id IS NOT NULL THEN 'failed' ELSE 'pending' END) AS status,
             COALESCE(e.error,upstream.error,CASE WHEN upstream.id IS NOT NULL THEN 'Upstream processing failed; full text was not extracted.' END) AS error,
             e.source_sha256,e.config,e.coverage,e.metrics,e.updated_at,
+            (SELECT COALESCE(SUM(jsonb_array_length(r.attempts)),0) FROM extraction_requests r
+             WHERE r.extraction_id=e.id) AS total_attempts,
             jsonb_array_length(COALESCE(e.result->'datasets','[]'::jsonb)) AS dataset_count """ + base + " ORDER BY p.id LIMIT %s OFFSET %s", (run_id, limit, offset))
         return [dict(row) for row in self.cursor.fetchall()], total
 

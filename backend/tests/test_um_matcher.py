@@ -28,6 +28,36 @@ def test_match_exact_doi():
     assert decision.match_method == "exact_pid"
 
 
+def test_anchored_paper_alias_matches_um_collection_title():
+    mention = DatasetMention(publication_id="p", dataset_name="LUNG1", aliases=["NSCLC-Radiomics"],
+                             evidence=MentionEvidence(body_quote="LUNG1 (NSCLC-Radiomics)"))
+    records = [
+        UMDatasetRecord(um_dataset_id="W6977944434", title="Data From NSCLC-Radiomics"),
+        UMDatasetRecord(um_dataset_id="W6921838597", title="Data From NSCLC-Radiomics-Genomics"),
+    ]
+    decision = match_mention_to_um_dataset(mention, records)
+    assert decision.status == MatchStatus.POSSIBLE
+    assert decision.um_dataset_id == "W6977944434"
+    assert decision.review_required
+
+
+def test_multiple_grounded_links_support_one_record_or_report_conflicting_records():
+    mention = DatasetMention(
+        publication_id="p", dataset_name="Collection", evidence=MentionEvidence(body_quote="Deposit"),
+        metadata=DatasetMetadata(dataset_identifiers=["hdl:1234/example", "10.5555/data"],
+                                 dataset_urls=["https://example.org/download", "https://example.org/data"]),
+    )
+    doi = UMDatasetRecord(um_dataset_id="A", title="Data", doi="10.5555/data")
+    url = UMDatasetRecord(um_dataset_id="B", title="Other", url="https://example.org/data")
+    assert match_mention_to_um_dataset(mention, [url]).match_method == "exact_url"
+    assert match_mention_to_um_dataset(mention, [doi]).match_method == "exact_pid"
+    for records in ([doi, url], [url, doi]):
+        match = match_mention_to_um_dataset(mention, records)
+        assert match.status == MatchStatus.REVIEW_REQUIRED
+        assert match.um_dataset_id is None
+        assert match.candidate_um_dataset_ids == ["A", "B"]
+
+
 def test_match_possible_title_creator_year():
     mention = DatasetMention(
         publication_id="p2",

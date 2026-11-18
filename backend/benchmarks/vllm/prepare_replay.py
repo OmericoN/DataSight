@@ -6,7 +6,10 @@ import time
 from pathlib import Path
 
 from datasight.application.llm_extraction import extraction_configuration, fingerprint, prepare_source
+from datasight.application.pipeline_services import detect_mentions_batch
+from datasight.domain.results import RenderResult
 from datasight.infrastructure.ingestion.converter import GrobidConverter
+from datasight.infrastructure.ingestion.renderer import RENDERER_VERSION
 from datasight.infrastructure.persistence.repository import PipelineRepository
 
 
@@ -14,6 +17,7 @@ def prepare(pdf_paths):
     converter = GrobidConverter()
     converter.ensure_available()
     sources = []
+    renders = []
     for pdf in pdf_paths:
         conversion_started = time.monotonic()
         converted = converter.convert_pdf(pdf, paper_id=pdf.stem)
@@ -26,6 +30,11 @@ def prepare(pdf_paths):
                           'conversion_cache_reused': converted.quality_metrics.get('cache_reused', False),
                           'source_preparation_seconds': round(time.monotonic()-render_started, 3)}), flush=True)
         sources.append((pdf.stem, path, digest, len(text)))
+        renders.append(RenderResult(
+            paper_id=pdf.stem, xml_path=converted.xml_path, md_path=path, success=True,
+            message="Frozen benchmark render", sha256=digest, producer_version=RENDERER_VERSION,
+            profile="full_body",
+        ))
     settings = extraction_configuration(legacy=True)
     with PipelineRepository() as repo:
         run_id = repo.create_pipeline_run('Frozen PDF regression sources', {'extraction': settings})
@@ -43,7 +52,11 @@ def prepare(pdf_paths):
             row = repo.begin_publication_extraction(run_id, publication_id, fingerprint(digest, settings), settings)
             repo.attach_extraction_source(row['id'], str(path), digest, None)
             repo.fail_publication_extraction(row['id'], 'interrupted', 'Prepared regression source; inference not started')
+        repo.persist_render_results(renders)
         repo.finish_pipeline_run(run_id, 'interrupted')
+        detection = detect_mentions_batch(pipeline_run_id=run_id)
+        if detection["payload"]["failed_documents"]:
+            raise ValueError(f"Mention detection failed for prepared source run {run_id}")
         print(json.dumps({'run_id': run_id, 'run_key': repo.get_pipeline_run(run_id)['run_key'],
                           'sources': [{'paper_id': paper, 'sha256': digest, 'characters': length} for paper, _, digest, length in sources]}))
 
