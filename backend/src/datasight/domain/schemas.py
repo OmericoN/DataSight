@@ -46,9 +46,11 @@ class DatasetMetadata(BaseModel):
     features: dict[str, Any] | None = None
     reference_title: str | None = None
     persistent_identifier: str | None = None
+    dataset_identifiers: list[str] = Field(default_factory=list)
     dataset_authors: list[str] = Field(default_factory=list)
     dataset_year: int | None = None
     dataset_url: HttpUrl | str | None = None
+    dataset_urls: list[str] = Field(default_factory=list)
     reference_material: str | None = None
     material_year: int | None = None
     dataset_version: str | None = None

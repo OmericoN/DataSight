@@ -20,13 +20,15 @@ describe("dataset extraction outcomes", () => {
     vi.spyOn(api, "extractions").mockResolvedValue({ total: 3, offset: 0, limit: 25, items: [
       { id: 10, paper_id: "W1", title: "Zero paper", status: "successful", dataset_count: 0, error: null },
       { id: 11, paper_id: "W2", title: "Failed paper", status: "failed", dataset_count: 0, error: "Invalid evidence" },
-      { id: 12, paper_id: "W3", title: "Budget paper", status: "interrupted", dataset_count: 0, error: null,
+      { id: 12, paper_id: "W3", title: "Budget paper", status: "interrupted", dataset_count: 0, error: null, total_attempts: 53,
         error_category: 'extraction_budget_exceeded', progress: { phase: 'shared_features', attempts_this_invocation: 50,
           call_limit: 50, time_limit_seconds: 300, elapsed_seconds: 210, completed: {}, calls_by_phase: {} } },
     ] });
     const resume = vi.spyOn(api, "resumeExtractions").mockResolvedValue({ pipeline_run_id: 1, task_id: "t1", status: "queued" });
     mount();
-    expect(await screen.findByText("Completed · zero datasets")).toBeInTheDocument();
+    expect(await screen.findByText("Completed · zero candidates")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Candidates" })).toBeInTheDocument();
+    expect(screen.getByText("53 total HTTP attempts")).toBeInTheDocument();
     expect(screen.getByText("Invalid evidence")).toBeInTheDocument();
     expect(screen.getByText(/50\/50 calls/)).toBeInTheDocument();
     expect(screen.getByText(/Saved checkpoints can be resumed/)).toBeInTheDocument();

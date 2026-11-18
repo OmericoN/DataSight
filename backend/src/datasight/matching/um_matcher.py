@@ -16,25 +16,41 @@ def match_mention_to_um_dataset(
 ) -> UMMatchDecision:
     """Match one extracted mention against UM metadata without arbitrary tie-breaking."""
     candidate_list = list(candidates)
-    mention_pid = normalize_identifier(mention.metadata.persistent_identifier)
-    mention_url = normalize_identifier(str(mention.metadata.dataset_url or ""))
+    pids = {normalize_identifier(value) for value in [
+        mention.metadata.persistent_identifier, *mention.metadata.dataset_identifiers,
+    ]} - {""}
+    urls = {normalize_identifier(value) for value in [
+        str(mention.metadata.dataset_url or ""), *mention.metadata.dataset_urls,
+    ]} - {""}
 
+    exact_records = []
     for record in candidate_list:
         record_doi = normalize_identifier(record.doi)
         record_url = normalize_identifier(record.url)
-        if mention_pid and record_doi and mention_pid == record_doi:
-            return _decision(mention, record, MatchStatus.MATCHED, 1.0, "exact_pid", ["doi"])
-        if mention_url and record_url and mention_url == record_url:
-            return _decision(mention, record, MatchStatus.MATCHED, 1.0, "exact_url", ["url"])
+        if record_doi in pids:
+            exact_records.append((record, "exact_pid", "doi"))
+        elif record_url in urls:
+            exact_records.append((record, "exact_url", "url"))
+    if len(exact_records) > 1:
+        return UMMatchDecision(
+            publication_id=mention.publication_id, dataset_name=mention.dataset_name,
+            status=MatchStatus.REVIEW_REQUIRED, match_method="ambiguous_exact_identifier",
+            candidate_um_dataset_ids=sorted(record.um_dataset_id for record, _, _ in exact_records),
+            matched_fields=sorted({field for _, _, field in exact_records}), match_score=1.0,
+            review_required=True,
+        )
+    if exact_records:
+        record, method, field = exact_records[0]
+        return _decision(mention, record, MatchStatus.MATCHED, 1.0, method, [field])
 
-    mention_name = normalize_text(mention.dataset_name)
-    exact_name_records = [
-        record
-        for record in candidate_list
-        if mention_name
-        and mention_name
-        in {normalize_text(record.title), *(normalize_text(alias) for alias in record.aliases)}
-    ]
+    mention_names = {normalize_text(name) for name in [mention.dataset_name, *mention.aliases]} - {""}
+    exact_name_records = []
+    for record in candidate_list:
+        title = normalize_text(record.title)
+        # The UM export includes deposited collections titled "Data From <collection name>".
+        collection = title.removeprefix("data from ").removeprefix("data from: ")
+        if mention_names.intersection({title, collection, *(normalize_text(alias) for alias in record.aliases)}):
+            exact_name_records.append(record)
     if len(exact_name_records) > 1:
         return UMMatchDecision(
             publication_id=mention.publication_id,
@@ -58,18 +74,16 @@ def match_mention_to_um_dataset(
         )
 
     scored: list[tuple[float, UMDatasetRecord, list[str]]] = []
+    mention_authors = {normalize_text(author) for author in mention.metadata.dataset_authors}
     for record in candidate_list:
         fields: list[str] = []
         score = 0.0
-        title_score = max(
-            [jaccard(mention.dataset_name, record.title)]
-            + [jaccard(mention.dataset_name, alias) for alias in record.aliases]
-        )
+        title_score = max((jaccard(name, title) for name in mention_names
+                           for title in [record.title, *record.aliases]), default=0.0)
         if title_score:
             fields.append("title_or_alias")
             score += title_score * 0.6
 
-        mention_authors = {normalize_text(author) for author in mention.metadata.dataset_authors}
         record_creators = {normalize_text(creator) for creator in record.creators}
         if mention_authors and record_creators:
             author_overlap = len(mention_authors & record_creators) / len(

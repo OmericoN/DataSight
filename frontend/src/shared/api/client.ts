@@ -111,7 +111,7 @@ export type ExtractedDataset = {
 export type ExtractionSummary = {
   progress?: ExtractionProgress | null; error_category?: string | null;
   id: number | null; paper_id: string; title: string; status: string;
-  error: string | null; dataset_count: number;
+  error: string | null; dataset_count: number; total_attempts?: number;
 };
 
 export type ExtractionDetail = {
