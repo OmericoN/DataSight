@@ -1,6 +1,7 @@
 """Opt-in PostgreSQL integration tests; never use the application's DSN."""
 
 import os
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,7 +15,9 @@ from sqlalchemy.engine import make_url
 from datasight import config
 from datasight.domain.extraction import DatasetEntry, Evidence, Occurrence, PublicationExtraction
 from datasight.infrastructure.persistence.repository import PipelineRepository
-from datasight.application import llm_extraction
+from datasight.application import llm_extraction, pipeline_services
+from datasight.domain.candidate_detection import SCREENING_VERSION
+from datasight.infrastructure.ingestion.renderer import LEGACY_RENDERER_VERSION, RENDERER_VERSION
 from datasight.infrastructure.llm.client import InferenceUnavailable
 from datasight.domain.stages import PipelineStage
 from test_llm_extraction import GroundedClient
@@ -198,3 +201,99 @@ def test_whole_publication_service_persists_and_resumes_with_frozen_source(datab
     assert llm_extraction.extract_publication(repo, GroundedClient(), run2, row)["status"] == "successful"
     assert repo.latest_publication_extraction(run2, publication)["source_sha256"] == frozen
     assert repo.export_insight_rows(run1)[0]["features"]["display_name"] == "Alpha cohort"
+
+
+@pytest.mark.parametrize("decision", ["likely_use", "uncertain", "no_use"])
+def test_screening_controls_batch_eligibility_and_item_dispatch(database, tmp_path, monkeypatch, decision):
+    repo = database
+    run_id, _, publication = seed(repo)
+    repo.cursor.execute(
+        "UPDATE pipeline_runs SET config = config || %s WHERE id = %s",
+        (psycopg2.extras.Json({"detector_version": SCREENING_VERSION, "render_profile": "full_body"}), run_id),
+    )
+    path = tmp_path / "source.md"
+    raw = b"This publication is the source presented for testing."
+    path.write_bytes(raw)
+    repo.cursor.execute(
+        """INSERT INTO artifacts(publication_id,artifact_type,path,sha256,metadata)
+           VALUES (%s,'markdown',%s,%s,%s)""",
+        (publication, str(path), sha256(raw).hexdigest(),
+         psycopg2.extras.Json({"profile": "full_body", "producer_version": RENDERER_VERSION})),
+    )
+    repo.conn.commit()
+
+    class DecisionClient:
+        calls = 0
+
+        def complete(self, payload, response_model, record_attempt, validate, *, single_attempt):
+            self.__class__.calls += 1
+            return response_model(decision=decision)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pipeline_services, "GatewayClient", DecisionClient)
+    monkeypatch.setattr(pipeline_services, "PipelineRepository", lambda: PipelineRepository(repo.conn.dsn))
+    batch = pipeline_services.detect_mentions_batch(pipeline_run_id=run_id)
+    assert batch["count"] == 1
+    assert batch["payload"]["new_decisions"] == 1
+    assert batch["payload"]["reused_decisions"] == 0
+    assert batch["payload"]["decisions"][decision] == 1
+    assert repo.evaluation_paper_rows(run_id)[0]["detection_metrics"]["decision"] == decision
+    assert bool(repo.extraction_publications(run_id)) == (decision != "no_use")
+
+    repeated = pipeline_services.detect_mentions_batch(pipeline_run_id=run_id)
+    assert repeated["count"] == repeated["payload"]["documents"] == 1
+    assert repeated["payload"]["new_decisions"] == 0
+    assert repeated["payload"]["reused_decisions"] == 1
+    assert repeated["payload"]["decisions"][decision] == 1
+    assert repeated["payload"]["forwarded"] == int(decision != "no_use")
+
+    item_id, = repo.create_pipeline_items(run_id, ["W1"])
+    repo.queue_item_stage_for_run(run_id, PipelineStage.DETECT_MENTIONS)
+    item = pipeline_services.detect_mentions_pipeline_item(item_id)
+    assert item["status"] == "successful"
+    assert item["payload"]["decision"] == decision
+    assert item["payload"]["screening_reused"] is True
+    assert DecisionClient.calls == 1
+    repo.cursor.execute(
+        """SELECT pis.status AS stage_status, pi.status AS item_status
+           FROM pipeline_item_stages pis JOIN pipeline_items pi ON pi.id=pis.pipeline_item_id
+           WHERE pi.id=%s AND pis.stage='extract_features'""",
+        (item_id,),
+    )
+    row = repo.cursor.fetchone()
+    assert row["stage_status"] == ("skipped" if decision == "no_use" else "queued")
+    if decision == "no_use":
+        assert row["item_status"] == "successful"
+        assert repo.high_throughput_outcome(run_id) == "successful"
+        repo.finish_resumed_extraction_items(run_id)
+        assert repo.get_pipeline_item_context(item_id)["item_status"] == "successful"
+
+
+def test_runs_keep_their_renderer_artifact_after_a_new_version_is_rendered(database):
+    repo = database
+    old_run, new_run, publication = seed(repo)
+    for run_id, version in ((old_run, LEGACY_RENDERER_VERSION), (new_run, RENDERER_VERSION)):
+        frozen = {**llm_extraction.catalog_configuration("pruned"), "renderer_version": version}
+        repo.cursor.execute(
+            "UPDATE pipeline_runs SET config = %s WHERE id = %s",
+            (psycopg2.extras.Json({"renderer_version": version, "render_profile": "pruned", "extraction": frozen}),
+             run_id),
+        )
+        repo.cursor.execute(
+            """INSERT INTO artifacts(publication_id,artifact_type,path,sha256,metadata)
+               VALUES (%s,'markdown',%s,%s,%s) RETURNING id""",
+            (publication, f"{version}/paper.md", version,
+             psycopg2.extras.Json({"profile": "pruned", "producer_version": version})),
+        )
+        artifact_id = repo.cursor.fetchone()["id"]
+        artifact, = repo.get_markdown_artifacts_needing_detection(renderer_version=version, pipeline_run_id=run_id)
+        assert artifact["markdown_artifact_id"] == artifact_id
+        detection_id = repo.begin_detection_run(publication, artifact_id, version)
+        repo.finish_detection_run(detection_id, 0)
+
+    for run_id, version in ((old_run, LEGACY_RENDERER_VERSION), (new_run, RENDERER_VERSION)):
+        assert llm_extraction.require_compatible_run(repo, run_id)["config"]["renderer_version"] == version
+        assert repo.extraction_publications(run_id)[0]["markdown_sha256"] == version
+        assert repo.evaluation_paper_rows(run_id)[0]["markdown_sha256"] == version

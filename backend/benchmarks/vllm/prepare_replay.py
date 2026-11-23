@@ -6,11 +6,12 @@ import time
 from pathlib import Path
 
 from datasight.application.llm_extraction import extraction_configuration, fingerprint, prepare_source
-from datasight.application.pipeline_services import detect_mentions_batch
 from datasight.domain.results import RenderResult
 from datasight.infrastructure.ingestion.converter import GrobidConverter
 from datasight.infrastructure.ingestion.renderer import RENDERER_VERSION
 from datasight.infrastructure.persistence.repository import PipelineRepository
+
+PRESELECTED_VERSION = "benchmark-preselected-v1"
 
 
 def prepare(pdf_paths):
@@ -37,7 +38,9 @@ def prepare(pdf_paths):
         ))
     settings = extraction_configuration(legacy=True)
     with PipelineRepository() as repo:
-        run_id = repo.create_pipeline_run('Frozen PDF regression sources', {'extraction': settings})
+        run_id = repo.create_pipeline_run('Frozen PDF regression sources', {
+            'extraction': settings, 'detector_version': PRESELECTED_VERSION, 'render_profile': 'full_body',
+        })
         for paper_id, path, digest, length in sources:
             repo.cursor.execute('SELECT id FROM publications WHERE paper_id=%s', (paper_id,))
             existing = repo.cursor.fetchone()
@@ -53,10 +56,14 @@ def prepare(pdf_paths):
             repo.attach_extraction_source(row['id'], str(path), digest, None)
             repo.fail_publication_extraction(row['id'], 'interrupted', 'Prepared regression source; inference not started')
         repo.persist_render_results(renders)
+        for artifact in repo.get_markdown_artifacts_needing_detection(
+            detector_version=PRESELECTED_VERSION, pipeline_run_id=run_id, render_profile="full_body",
+        ):
+            repo.record_mention_screening(
+                artifact["publication_row_id"], artifact["markdown_artifact_id"], artifact["render_sha256"],
+                PRESELECTED_VERSION, {"decision": "likely_use", "decision_reason": "benchmark_preselected"},
+            )
         repo.finish_pipeline_run(run_id, 'interrupted')
-        detection = detect_mentions_batch(pipeline_run_id=run_id)
-        if detection["payload"]["failed_documents"]:
-            raise ValueError(f"Mention detection failed for prepared source run {run_id}")
         print(json.dumps({'run_id': run_id, 'run_key': repo.get_pipeline_run(run_id)['run_key'],
                           'sources': [{'paper_id': paper, 'sha256': digest, 'characters': length} for paper, _, digest, length in sources]}))
 

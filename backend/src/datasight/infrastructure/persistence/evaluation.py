@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from datasight.domain.candidate_detection import DETECTOR_VERSION
+from datasight.domain.candidate_detection import DETECTOR_VERSION, SCREENING_VERSION
 
 
 class EvaluationRepositoryMixin:
@@ -78,6 +78,8 @@ class EvaluationRepositoryMixin:
             LEFT JOIN LATERAL (
                 SELECT id, path, sha256, metadata FROM artifacts
                 WHERE publication_id = p.id AND artifact_type = 'markdown'
+                  AND (pr.config->>'render_profile' IS NULL OR metadata->>'profile' = pr.config->>'render_profile')
+                  AND (pr.config->>'renderer_version' IS NULL OR metadata->>'producer_version' = pr.config->>'renderer_version')
                 ORDER BY created_at DESC, id DESC LIMIT 1
             ) md ON TRUE
             LEFT JOIN LATERAL (
@@ -86,14 +88,15 @@ class EvaluationRepositoryMixin:
                 WHERE publication_id = p.id
                   AND markdown_artifact_id = md.id
                   AND render_sha256 = md.sha256
-                  AND detector_version = %s
-                ORDER BY created_at DESC, id DESC LIMIT 1
+                  AND detector_version IN (COALESCE(pr.config->>'detector_version', %s), %s)
+                ORDER BY (detector_version = COALESCE(pr.config->>'detector_version', %s)) DESC,
+                         created_at DESC, id DESC LIMIT 1
             ) detection ON TRUE
             WHERE dc.pipeline_run_id = %s
               AND dc.included
             ORDER BY dc.id
             """,
-            (DETECTOR_VERSION, pipeline_run_id),
+            (DETECTOR_VERSION, SCREENING_VERSION, DETECTOR_VERSION, pipeline_run_id),
         )
         return [dict(row) for row in self.cursor.fetchall()]
 
@@ -128,17 +131,20 @@ class EvaluationRepositoryMixin:
                 c.score AS legacy_tier_score,
                 c.source
             FROM discovery_candidates dc
+            JOIN pipeline_runs pr ON pr.id = dc.pipeline_run_id
             JOIN publications p ON p.id = dc.publication_id
             JOIN LATERAL (
                 SELECT id, path, sha256, metadata FROM artifacts
                 WHERE publication_id = p.id AND artifact_type = 'markdown'
+                  AND (pr.config->>'render_profile' IS NULL OR metadata->>'profile' = pr.config->>'render_profile')
+                  AND (pr.config->>'renderer_version' IS NULL OR metadata->>'producer_version' = pr.config->>'renderer_version')
                 ORDER BY created_at DESC, id DESC LIMIT 1
             ) md ON TRUE
             JOIN mention_detection_runs dr
               ON dr.publication_id = p.id
              AND dr.markdown_artifact_id = md.id
              AND dr.render_sha256 = md.sha256
-             AND dr.detector_version = %s
+             AND dr.detector_version = COALESCE(pr.config->>'detector_version', %s)
              AND dr.status = 'successful'
             JOIN mention_candidates c ON c.detection_run_id = dr.id
             WHERE dc.pipeline_run_id = %s

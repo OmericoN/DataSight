@@ -14,7 +14,7 @@ from datasight import config
 from datasight.application.bounded_extraction import BoundedExtractionEngine, PROMPT_VERSION as BOUNDED_PROMPT_VERSION
 from datasight.application.extraction_engine import CHUNK_CHARACTERS, LOCATOR_BLOCK_TOKENS, OVERLAP_CHARACTERS, ExtractionEngine
 from datasight.application.catalog_extraction import (
-    CATALOG_PROMPT_VERSIONS, PROMPT_VERSION as CATALOG_PROMPT_VERSION, run_catalog_extraction,
+    CATALOG_PROMPT_VERSIONS, CATALOG_SPLIT_DEPTH, PROMPT_VERSION as CATALOG_PROMPT_VERSION, run_catalog_extraction,
 )
 from datasight.application.whole_document_extraction import (
     PROMPT_VERSION as WHOLE_DOCUMENT_PROMPT_VERSION,
@@ -26,7 +26,7 @@ from datasight.application.whole_document_extraction import (
 from datasight.domain.extraction import PROMPT_VERSION, SCHEMA_VERSION, PublicationExtraction
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
 from datasight.infrastructure.ingestion.renderer import (
-    DEFAULT_RENDER_PROFILE, RENDERER_VERSION, RenderProfile, _write_atomic, extract_markdown,
+    DEFAULT_RENDER_PROFILE, LEGACY_RENDERER_VERSION, RENDERER_VERSION, RenderProfile, _write_atomic, extract_markdown,
 )
 from datasight.infrastructure.llm.client import CONTEXT_TOKENS, MAX_PROMPT_CHARS, MAX_TOKENS, TEMPLATE_RESERVE, GatewayClient, InferenceUnavailable
 from datasight.infrastructure.llm.tokenizer import TOKENIZER_REVISION, TOKENIZER_SHA256
@@ -96,27 +96,28 @@ def catalog_configuration(render_profile: RenderProfile, prompt_version: str = C
         **whole_document_configuration(),
         "prompt_version": prompt_version,
         "render_profile": render_profile,
-        "max_output_splits_per_chunk": 1,
+        "max_output_splits_per_chunk": CATALOG_SPLIT_DEPTH if prompt_version == CATALOG_PROMPT_VERSION else 1,
     }
 
 
 def supported_extraction_configurations() -> tuple[dict[str, Any], ...]:
-    return (
+    current = (
         *(catalog_configuration(profile, version) for version in CATALOG_PROMPT_VERSIONS for profile in ("pruned", "full_body")),
         whole_document_configuration(), extraction_configuration(legacy=False), extraction_configuration(legacy=True),
     )
+    return current + tuple({**settings, "renderer_version": LEGACY_RENDERER_VERSION} for settings in current)
 
 
 def fingerprint(source_hash: str, settings: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps({"source_sha256": source_hash, **settings}, sort_keys=True).encode()).hexdigest()
 
 
-def prepare_source(row: dict[str, Any]) -> tuple[str, Path, str]:
+def prepare_source(row: dict[str, Any], *, renderer_version: str = RENDERER_VERSION) -> tuple[str, Path, str]:
     if row.get("xml_path"):
-        text = extract_markdown(Path(row["xml_path"]), profile="full_body")
+        text = extract_markdown(Path(row["xml_path"]), profile="full_body", version=renderer_version)
     else:
         metadata = row.get("markdown_metadata") or {}
-        if metadata.get("profile") != "full_body" or metadata.get("producer_version") != RENDERER_VERSION:
+        if metadata.get("profile") != "full_body" or metadata.get("producer_version") != renderer_version:
             raise ValueError("Retained TEI is required to prepare complete full-body source")
         path = Path(row["markdown_path"])
         if sha256_file(path) != row.get("markdown_sha256"):
@@ -143,9 +144,11 @@ def freeze_source(raw: bytes, profile: RenderProfile | None = None) -> tuple[Pat
     return destination, digest
 
 
-def prepare_catalog_source(row: dict[str, Any], profile: RenderProfile) -> tuple[str, Path, str]:
+def prepare_catalog_source(
+    row: dict[str, Any], profile: RenderProfile, *, renderer_version: str = RENDERER_VERSION,
+) -> tuple[str, Path, str]:
     metadata = row.get("markdown_metadata") or {}
-    if not row.get("markdown_path") or metadata.get("profile") != profile or metadata.get("producer_version") != RENDERER_VERSION:
+    if not row.get("markdown_path") or metadata.get("profile") != profile or metadata.get("producer_version") != renderer_version:
         raise ValueError(f"No detected {profile} Markdown is available")
     raw = Path(row["markdown_path"]).read_bytes()
     if hashlib.sha256(raw).hexdigest() != row.get("markdown_sha256"):
@@ -202,6 +205,7 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
         render_profile=run_config.get("render_profile", DEFAULT_RENDER_PROFILE),
     )
     catalog = settings.get("prompt_version") in CATALOG_PROMPT_VERSIONS
+    renderer_version = settings.get("renderer_version", RENDERER_VERSION)
     try:
         if previous and previous.get("source_path"):
             if previous["config"] != settings:
@@ -217,9 +221,9 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
                     raise ValueError("Immutable source snapshot has changed")
                 text = path.read_text(encoding="utf-8")
         elif catalog:
-            text, path, digest = prepare_catalog_source(row, settings["render_profile"])
+            text, path, digest = prepare_catalog_source(row, settings["render_profile"], renderer_version=renderer_version)
         else:
-            text, path, digest = row.get('_prepared_source') or prepare_source(row)
+            text, path, digest = row.get('_prepared_source') or prepare_source(row, renderer_version=renderer_version)
     except Exception as exc:
         if previous:
             repo.fail_publication_extraction(previous["id"], "failed", str(exc))
@@ -240,7 +244,7 @@ def extract_publication(repo: Any, client: GatewayClient, run_id: int, row: dict
         VALUES (%s,'extraction_source',%s,%s,%s,%s)
         ON CONFLICT(publication_id,artifact_type,path) DO UPDATE SET sha256=EXCLUDED.sha256 RETURNING id
     """, (row["publication_id"], str(path), digest, path.stat().st_size, psycopg2.extras.Json({
-        "profile": settings["render_profile"], "producer_version": RENDERER_VERSION,
+        "profile": settings["render_profile"], "producer_version": renderer_version,
     })))
     artifact_id = repo.cursor.fetchone()["id"]
     repo.attach_extraction_source(extraction_id, str(path), digest, artifact_id)
@@ -319,7 +323,9 @@ def extract_run(run_id: int | None, limit: int | None = None, publication_id: in
                     previous = repo.latest_publication_extraction(run_id, row['publication_id'])
                     if not previous or not previous.get('source_path'):
                         try:
-                            row['_prepared_source'] = prepare_source(row)
+                            row['_prepared_source'] = prepare_source(
+                                row, renderer_version=frozen.get("renderer_version", RENDERER_VERSION),
+                            )
                         except Exception:
                             results.append(extract_publication(repo, client, run_id, row))
                             continue
@@ -335,7 +341,7 @@ def extract_run(run_id: int | None, limit: int | None = None, publication_id: in
             status = "interrupted" if interrupted else "completed_with_errors" if failed and successful else "failed" if failed else "successful" if results else "skipped"
             output = {"stage": "extract_features", "status": status, "count": sum(item.get("datasets", 0) for item in results),
                       "message": f"Extracted {successful} publications; {failed} failed; {sum(item['status'] == 'interrupted' for item in results)} interrupted."
-                      if results else "No eligible publications with successfully detected rendered text.",
+                      if results else "No selected publications are eligible for extraction after screening.",
                       "payload": {"publications": len(results), "successful": successful, "failed": failed, "results": results}}
             repo.record_stage_result("extract_features", status, output, run_id)
             return output

@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+CURRENT_INSIGHT_MENTION = """
+    (dm.extraction_id IS NULL AND NOT EXISTS (
+        SELECT 1 FROM publication_extractions e WHERE e.publication_id = p.id
+    )) OR dm.extraction_id = (
+        SELECT e.id FROM publication_extractions e WHERE e.publication_id = p.id
+        ORDER BY e.id DESC LIMIT 1
+    )
+"""
+
+
 class InsightRepositoryMixin:
     cursor: Any
 
@@ -96,12 +106,42 @@ class InsightRepositoryMixin:
         )
         return [dict(row) for row in self.cursor.fetchall()]
 
-    def export_insight_rows(self, pipeline_run_id: int | None = None) -> list[dict[str, Any]]:
-        if pipeline_run_id is not None:
-            return [row for row in self.export_run_result_rows(pipeline_run_id) if row.get("dataset_name")]
-
+    def list_insight_runs(self) -> list[dict[str, Any]]:
         self.cursor.execute(
             """
+            SELECT id, query, status, created_at FROM pipeline_runs
+            ORDER BY created_at DESC, id DESC
+            """
+        )
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def list_insight_publications(self) -> list[dict[str, Any]]:
+        self.cursor.execute(
+            f"""
+            SELECT p.paper_id, p.title AS publication_title, p.year AS publication_year
+            FROM publications p
+            WHERE EXISTS (
+                SELECT 1 FROM dataset_mentions dm
+                WHERE dm.publication_id = p.id AND ({CURRENT_INSIGHT_MENTION})
+            )
+            ORDER BY lower(p.title) NULLS LAST, p.paper_id
+            """
+        )
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def export_insight_rows(
+        self, pipeline_run_id: int | None = None, *, paper_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if pipeline_run_id is not None:
+            return [
+                row for row in self.export_run_result_rows(pipeline_run_id)
+                if row.get("dataset_name") and (paper_id is None or row["paper_id"] == paper_id)
+            ]
+
+        publication_filter = "AND p.paper_id = %s" if paper_id is not None else ""
+        params = (None, None, paper_id) if paper_id is not None else (None, None)
+        self.cursor.execute(
+            f"""
             SELECT
                 p.paper_id,
                 p.title AS publication_title,
@@ -148,14 +188,9 @@ class InsightRepositoryMixin:
             ) discovery ON TRUE
             LEFT JOIN um_match_decisions md ON md.dataset_mention_id = dm.id
             LEFT JOIN um_datasets ud ON ud.id = md.um_dataset_row_id
-            WHERE (dm.extraction_id IS NULL AND NOT EXISTS (
-                SELECT 1 FROM publication_extractions e WHERE e.publication_id=p.id
-            )) OR dm.extraction_id=(
-                SELECT e.id FROM publication_extractions e WHERE e.publication_id=p.id
-                ORDER BY e.id DESC LIMIT 1
-            )
-            ORDER BY p.paper_id, dm.dataset_name
+            WHERE ({CURRENT_INSIGHT_MENTION}) {publication_filter}
+            ORDER BY p.paper_id, dm.dataset_name, dm.id
             """,
-            (None, None),
+            params,
         )
         return [dict(row) for row in self.cursor.fetchall()]

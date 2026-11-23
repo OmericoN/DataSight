@@ -15,6 +15,7 @@ from datasight.domain import extraction as contract
 from datasight.domain.candidate_detection import standardize_section
 from datasight.infrastructure.llm.client import GatewayClient, InvalidCompletion, OutputTruncated, RequestTooLarge, payload_for
 from datasight.infrastructure.llm.tokenizer import count_tokens
+from datasight.matching.normalization import catalog_link_key
 
 CHUNK_CHARACTERS = 2200
 LOCATOR_BLOCK_TOKENS = 6000
@@ -233,7 +234,7 @@ def specific_name(value: str) -> str | None:
 
 def identity_keys(entry: contract.DatasetEntry) -> set[str]:
     keys = {
-        "id:" + item.value.scheme.casefold() + ":" + item.value.literal.casefold().removeprefix("https://doi.org/")
+        "id:" + item.value.scheme.casefold() + ":" + (catalog_link_key(item.value.literal) or item.value.literal.casefold())
         for item in entry.identity.identifiers.values if entry.identity.identifiers.state == "reported" and item.value.target == "dataset"
     }
     # Only explicitly named datasets/aliases can establish name equivalence.
@@ -246,40 +247,55 @@ def identity_keys(entry: contract.DatasetEntry) -> set[str]:
     return keys
 
 
+def _merge_entries(target: contract.DatasetEntry, entry: contract.DatasetEntry) -> None:
+    for group in ("identity", "use"):
+        setattr(target, group, merge_features(getattr(target, group), getattr(entry, group)))
+    existing = {tuple(occ.evidence_ids): occ for occ in target.occurrences}
+    for occurrence in entry.occurrences:
+        anchor = tuple(occurrence.evidence_ids)
+        if anchor in existing:
+            saved = existing[anchor]
+            saved.use = merge_features(saved.use, occurrence.use)
+            saved.citation = merge_features(saved.citation, occurrence.citation)
+            saved.citation_links = list({link.model_dump_json(): link for link in
+                                         saved.citation_links + occurrence.citation_links}.values())
+        else:
+            target.occurrences.append(occurrence)
+            existing[anchor] = occurrence
+    target.review_reasons = sorted(set(target.review_reasons + entry.review_reasons))
+
+
 def consolidate(entries: list[contract.DatasetEntry], ambiguous_names: set[str] | None = None) -> list[contract.DatasetEntry]:
     output: list[contract.DatasetEntry] = []
+    owners: dict[str, set[int]] = {}
     blocked_keys = {"name:" + name for name in (ambiguous_names or ())}
     for entry in entries:
-        matches = [other for other in output if (identity_keys(entry) & identity_keys(other)) - blocked_keys]
+        keys = identity_keys(entry) - blocked_keys
+        matches = {index for key in keys for index in owners.get(key, ())}
         if len(matches) == 1:
-            target = matches[0]
+            index = next(iter(matches))
+            target = output[index]
             # Distinct explicit dataset identifiers require review, not a name-only merge.
-            left_ids = {key for key in identity_keys(target) if key.startswith("id:")}
-            right_ids = {key for key in identity_keys(entry) if key.startswith("id:")}
+            previous_keys = identity_keys(target) - blocked_keys
+            left_ids = {key for key in previous_keys if key.startswith("id:")}
+            right_ids = {key for key in keys if key.startswith("id:")}
             shared_schemes = {key.split(":", 2)[1] for key in left_ids} & {key.split(":", 2)[1] for key in right_ids}
-            if shared_schemes and not left_ids & right_ids:
+            agreement = {key.split(":", 2)[1] for key in left_ids & right_ids}
+            if shared_schemes - agreement:
                 entry.review_reasons.append("Same name has different dataset identifiers; identity unresolved")
-                output.append(entry)
+            else:
+                _merge_entries(target, entry)
+                merged_keys = identity_keys(target) - blocked_keys
+                for key in previous_keys - merged_keys:
+                    owners[key].remove(index)
+                for key in merged_keys - previous_keys:
+                    owners.setdefault(key, set()).add(index)
                 continue
-            for group in ("identity", "use"):
-                setattr(target, group, merge_features(getattr(target, group), getattr(entry, group)))
-            existing = {tuple(occ.evidence_ids): occ for occ in target.occurrences}
-            for occurrence in entry.occurrences:
-                key = tuple(occurrence.evidence_ids)
-                if key in existing:
-                    saved = existing[key]
-                    saved.use = merge_features(saved.use, occurrence.use)
-                    saved.citation = merge_features(saved.citation, occurrence.citation)
-                    saved.citation_links = list({link.model_dump_json(): link for link in
-                                                 saved.citation_links + occurrence.citation_links}.values())
-                else:
-                    target.occurrences.append(occurrence)
-                    existing[key] = occurrence
-            target.review_reasons = sorted(set(target.review_reasons + entry.review_reasons))
-        else:
-            if matches:
-                entry.review_reasons.append("Multiple possible dataset identities; grouping requires review")
-            output.append(entry)
+        elif matches:
+            entry.review_reasons.append("Multiple possible dataset identities; grouping requires review")
+        for key in keys:
+            owners.setdefault(key, set()).add(len(output))
+        output.append(entry)
     for index, entry in enumerate(output, 1):
         entry.dataset_local_id = f"d{index}"
         for number, occurrence in enumerate(entry.occurrences, 1):

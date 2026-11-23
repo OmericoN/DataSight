@@ -77,7 +77,7 @@ export default function DiscoveryLaunchPage() {
 
   const previewRequest = useMemo<DiscoveryPreviewRequest>(
     () => ({
-      strategy_version: 2,
+      strategy_version: 3,
       mode,
       focus_query: mode === "catalog_funnel" ? focusQuery.trim() : "",
       manual_query: mode === "manual" ? manualQuery.trim() || null : null,
@@ -224,12 +224,14 @@ export default function DiscoveryLaunchPage() {
             />
             {mode === "catalog_funnel" && profile?.phases?.length ? (
               <SettingsDisclosure label="Smart discovery stages">
-                <p className="text-sm text-muted-foreground">Discovery starts with direct evidence and broadens the search if more candidates with PDF links are needed.</p>
+                <p className="text-sm text-muted-foreground">Discovery skips works listed in the UM catalog and likely source papers. It follows citations to find candidates for dataset reuse.</p>
                 <ol className="mt-3 divide-y text-sm">
                   {profile.phases.map((phase) => (
                     <li key={phase.id} className="grid gap-x-3 gap-y-1 py-2 @sm:grid-cols-[minmax(0,1fr)_auto]">
                       <span className="font-medium">{phase.label}</span>
-                      <span className="text-xs tabular-nums text-muted-foreground">{phase.estimated_calls} calls · ≈ ${phase.estimated_cost_usd.toFixed(4)}</span>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {phase.id === "source_citations" ? "Depends on source papers found" : `${phase.estimated_calls} calls · ≈ $${phase.estimated_cost_usd.toFixed(4)}`}
+                      </span>
                       <span className="text-muted-foreground @sm:col-span-2">{phase.description}</span>
                     </li>
                   ))}
@@ -352,7 +354,12 @@ function PhaseResults({ mode, preview }: { mode: DiscoveryMode; preview: Awaited
         {Object.entries(preview.phase_results).map(([phase, result]) => (
           <div key={phase} className="rounded-lg border p-3 text-sm">
             <div className="flex items-center justify-between gap-2"><p className="font-medium capitalize">{formatText(phase)}</p><Badge variant={result.status === "completed" ? "secondary" : "outline"}>{String(result.status)}</Badge></div>
-            <div className="mt-3 grid gap-1 text-xs text-muted-foreground"><SummaryLine label="Unique added" value={String(result.unique_added ?? 0)} /><SummaryLine label="Ready afterward" value={String(result.ready_after_phase ?? 0)} /><SummaryLine label="Calls" value={String(result.calls ?? 0)} /></div>
+            <div className="mt-3 grid gap-1 text-xs text-muted-foreground">
+              <SummaryLine label="Unique added" value={String(result.unique_added ?? 0)} />
+              {Number(result.catalog_hits_skipped) > 0 && <SummaryLine label="Catalog or source-paper hits skipped" value={String(result.catalog_hits_skipped)} />}
+              <SummaryLine label="Ready afterward" value={String(result.ready_after_phase ?? 0)} />
+              <SummaryLine label="Calls" value={String(result.calls ?? 0)} />
+            </div>
           </div>
         ))}
       </CardContent>
@@ -388,7 +395,7 @@ function CandidatePreview({ mode, previewId, candidates, excludedIds, onSelect, 
 }
 
 function CandidateSheet({ mode, candidate, onClose }: { mode: DiscoveryMode; candidate: DiscoveryCandidate | null; onClose: () => void }) {
-  return <Sheet open={candidate !== null} onOpenChange={(open) => !open && onClose()}><SheetContent side="right" className="w-[94vw] max-w-[calc(100vw-1rem)] sm:max-w-xl"><SheetHeader><SheetTitle>{candidate?.title ?? "Candidate evidence"}</SheetTitle><SheetDescription>{candidate?.paper_id}</SheetDescription></SheetHeader>{candidate ? <div className="grid gap-4 overflow-y-auto px-4 pb-5"><div className="grid grid-cols-2 gap-3 rounded-lg border p-4"><Detail label={mode === "random" ? "Sampling basis" : "Evidence tier"} value={mode === "random" ? "Random" : candidate.evidence_tier} /><Detail label="Candidate strength" value={mode === "random" ? "Not scored" : `${Math.round(candidate.candidate_strength)}/100`} /><Detail label="Discovery readiness" value={candidate.pipeline_ready ? "PDF URL found; not yet validated" : "No-PDF-URL watchlist"} /><Detail label="Citations" value={candidate.cited_by_count ?? "—"} /></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">{mode === "random" ? "Selection reason" : "Discovery evidence"}</p><div className="mt-2 flex flex-wrap gap-2">{candidate.evidence_reasons.map((reason) => <Badge key={reason} variant="outline">{formatText(reason)}</Badge>)}</div></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">Verified UM dataset IDs</p><p className="mt-2 break-words font-mono text-sm">{candidate.matched_um_dataset_ids.join(", ") || "No dataset ID can be safely attributed from the OpenAlex response."}</p></div>{candidate.source_url ? <Button asChild variant="outline"><a href={candidate.source_url} target="_blank" rel="noreferrer"><RiExternalLinkLine data-icon="inline-start" />Open in OpenAlex</a></Button> : null}</div> : null}</SheetContent></Sheet>;
+  return <Sheet open={candidate !== null} onOpenChange={(open) => !open && onClose()}><SheetContent side="right" className="w-[94vw] max-w-[calc(100vw-1rem)] sm:max-w-xl"><SheetHeader><SheetTitle>{candidate?.title ?? "Candidate evidence"}</SheetTitle><SheetDescription>{candidate?.paper_id}</SheetDescription></SheetHeader>{candidate ? <div className="grid gap-4 overflow-y-auto px-4 pb-5"><div className="grid grid-cols-2 gap-3 rounded-lg border p-4"><Detail label={mode === "random" ? "Sampling basis" : "Evidence tier"} value={mode === "random" ? "Random" : candidate.evidence_tier} /><Detail label="Candidate strength" value={mode === "random" ? "Not scored" : `${Math.round(candidate.candidate_strength)}/100`} /><Detail label="Discovery readiness" value={candidate.pipeline_ready ? "PDF URL found; not yet validated" : "No-PDF-URL watchlist"} /><Detail label="Citations" value={candidate.cited_by_count ?? "—"} /></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">{mode === "random" ? "Selection reason" : "Discovery evidence"}</p><div className="mt-2 flex flex-wrap gap-2">{candidate.evidence_reasons.map((reason) => <Badge key={reason} variant="outline">{formatText(reason)}</Badge>)}</div></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">UM dataset IDs found in the publication metadata</p><p className="mt-2 break-words font-mono text-sm">{candidate.matched_um_dataset_ids.join(", ") || "No dataset ID can be safely attributed from the OpenAlex response."}</p></div>{candidate.source_url ? <Button asChild variant="outline"><a href={candidate.source_url} target="_blank" rel="noreferrer"><RiExternalLinkLine data-icon="inline-start" />Open in OpenAlex</a></Button> : null}</div> : null}</SheetContent></Sheet>;
 }
 
 function AdvancedSettings({ highThroughput, maxCost, outputPath, overwrite, umDatasetsPath, onHighThroughput, onMaxCost, onOutputPath, onOverwrite, onUmDatasetsPath }: { highThroughput: boolean; maxCost: number; outputPath: string; overwrite: boolean; umDatasetsPath: string; onHighThroughput: (value: boolean) => void; onMaxCost: (value: number) => void; onOutputPath: (value: string) => void; onOverwrite: (value: boolean) => void; onUmDatasetsPath: (value: string) => void }) {

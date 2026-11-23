@@ -122,6 +122,19 @@ class PaginatedInsightsResponse(InsightsResponse):
     limit: int
 
 
+class InsightRunOption(BaseModel):
+    id: int
+    query: str | None
+    status: str
+    created_at: datetime | None
+
+
+class InsightPublicationOption(BaseModel):
+    paper_id: str
+    publication_title: str | None
+    publication_year: int | None
+
+
 class UMProfilePhase(BaseModel):
     id: str
     label: str
@@ -157,7 +170,7 @@ class OpenAlexStatusResponse(BaseModel):
 class DiscoveryPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    strategy_version: Literal[2] = 2
+    strategy_version: Literal[3] = 3
     mode: Literal["catalog_funnel", "random", "manual"] = "catalog_funnel"
     focus_query: str = ""
     manual_query: str | None = None
@@ -208,7 +221,7 @@ class DiscoveryCandidateSummary(BaseModel):
 
 class DiscoveryPreviewResponse(BaseModel):
     preview_id: str
-    strategy_version: Literal[2]
+    strategy_version: Literal[3]
     strategy_fingerprint: str
     catalog_fingerprint: str
     language: str | None = None

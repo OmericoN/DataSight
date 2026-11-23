@@ -800,8 +800,8 @@ function RunStageFlag({ passed }: { passed: boolean }) {
 }
 
 function ResultPagination({ offset, pageSize, shown, total, loading, onOffset }: { offset: number; pageSize: number; shown: number; total: number; loading: boolean; onOffset: (offset: number) => void }) {
-  const start = total ? offset + 1 : 0;
-  const end = Math.min(offset + shown, total);
+  const start = shown ? offset + 1 : 0;
+  const end = shown ? Math.min(offset + shown, total) : 0;
   return <div className="flex items-center justify-between gap-3 border-t p-3 text-xs text-muted-foreground"><p>Showing {start}–{end} of {total}</p><div className="flex gap-2"><Button type="button" variant="outline" size="sm" disabled={!offset || loading} onClick={() => onOffset(Math.max(0, offset - pageSize))}>Previous</Button><Button type="button" variant="outline" size="sm" disabled={offset + pageSize >= total || loading} onClick={() => onOffset(offset + pageSize)}>Next</Button></div></div>;
 }
 
@@ -949,29 +949,52 @@ function WorkspacePage() {
   );
 }
 
+type InsightView = "overall" | "run" | "publication";
+const INSIGHT_PAGE_SIZE = 25;
+
 function InsightsPage() {
-  const [selectedInsightIndex, setSelectedInsightIndex] = useState<
-    number | null
-  >(null);
+  const [view, setView] = useState<InsightView>("overall");
+  const [selectedRunId, setSelectedRunId] = useState<number>();
+  const [selectedPaperId, setSelectedPaperId] = useState<string>();
+  const [offset, setOffset] = useState(0);
+  const [selectedInsight, setSelectedInsight] = useState<Record<string, unknown> | null>(null);
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const runsQuery = useQuery({
+    queryKey: ["insight-runs"],
+    queryFn: api.insightRuns,
+    enabled: view === "run",
+  });
+  const publicationsQuery = useQuery({
+    queryKey: ["insight-publications"],
+    queryFn: api.insightPublications,
+    enabled: view === "publication",
+  });
+  const runs = runsQuery.data ?? [];
+  const publications = publicationsQuery.data ?? [];
+  const run = runs.find((option) => option.id === selectedRunId) ?? runs[0];
+  const publication = publications.find((option) => option.paper_id === selectedPaperId) ?? publications[0];
+  const runId = view === "run" ? run?.id : undefined;
+  const paperId = view === "publication" ? publication?.paper_id : undefined;
+  const scopeQuery = view === "run" ? runsQuery : view === "publication" ? publicationsQuery : undefined;
   const insightsQuery = useQuery({
-    queryKey: ["insights"],
-    queryFn: () => api.insights(100),
+    queryKey: ["insights", view, runId, paperId, offset],
+    queryFn: () => runId === undefined
+      ? api.insights(INSIGHT_PAGE_SIZE, offset, paperId)
+      : api.runResults(runId, offset, INSIGHT_PAGE_SIZE, true),
+    enabled: view === "overall" || runId !== undefined || paperId !== undefined,
     refetchInterval: 10000,
   });
   const rows = insightsQuery.data?.rows ?? [];
-  const columns = useMemo(
-    () =>
-      insightsQuery.data?.columns ??
-      Array.from(new Set(rows.flatMap((row) => Object.keys(row)))),
-    [insightsQuery.data?.columns, rows],
-  );
-  const selectedInsight =
-    selectedInsightIndex === null ? null : rows[selectedInsightIndex];
+  const columns = insightsQuery.data?.columns ?? [];
+  const total = insightsQuery.data?.total ?? rows.length;
+  const loading = Boolean(scopeQuery?.isLoading || insightsQuery.isLoading);
+  const queryError = scopeQuery?.error ?? insightsQuery.error;
+  const viewLabel = view === "run" ? "this run" : view === "publication" ? "this publication" : "all publications";
   const downloadMutation = useMutation({
-    mutationFn: (chosenColumns: string[]) =>
-      api.downloadInsightsCsv(chosenColumns),
+    mutationFn: (chosenColumns: string[]) => runId === undefined
+      ? api.downloadInsightsCsv(chosenColumns, paperId)
+      : api.downloadRunInsightResultsCsv(runId, chosenColumns, true),
     onSuccess: ({ blob, filename }) => {
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -1006,19 +1029,27 @@ function InsightsPage() {
 
   return (
     <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col gap-5">
-      <Card className="min-w-0">
-        <CardHeader className="!flex flex-wrap items-start justify-between gap-3 px-4 sm:px-6">
-          <div className="min-w-0 flex-1 basis-48">
-            <CardTitle>Insights</CardTitle>
-            <CardDescription>Browse extracted dataset facts across publications.</CardDescription>
-          </div>
-          <CardAction>
-            <div className="flex items-center gap-2">
+      <Card className="min-w-0 gap-0 py-0">
+        <CardContent className="min-w-0 px-0">
+          <Tabs
+            value={view}
+            onValueChange={(value) => {
+              setView(value as InsightView);
+              setOffset(0);
+            }}
+            className="gap-0"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3 sm:px-5">
+              <TabsList aria-label="Insight scope">
+                <TabsTrigger value="overall">Overall</TabsTrigger>
+                <TabsTrigger value="run">By run</TabsTrigger>
+                <TabsTrigger value="publication">By publication</TabsTrigger>
+              </TabsList>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={insightsQuery.isLoading || !rows.length}
+                disabled={!columns.length || !total}
                 onClick={() => {
                   setSelectedColumns(columns);
                   downloadMutation.reset();
@@ -1028,26 +1059,73 @@ function InsightsPage() {
                 <RiDownload2Line data-icon="inline-start" />
                 Download CSV
               </Button>
-              <StatusBadge
-                status={insightsQuery.isFetching ? "running" : "ready"}
-              />
             </div>
-          </CardAction>
-        </CardHeader>
-        <CardContent className="min-w-0 overflow-hidden px-0">
-          {insightsQuery.isLoading ? <TableSkeleton /> : null}
-          {insightsQuery.isError ? <InlineQueryError title="Insights could not be loaded" error={insightsQuery.error} /> : null}
-          {!insightsQuery.isLoading && !insightsQuery.isError && !rows.length ? (
-            <EmptyState
-              icon={RiFileList3Line}
-              title="No insights yet"
-              description="Run the pipeline to export joined insight rows."
-            />
-          ) : null}
-          {rows.length ? <>
-            <InsightSummaryList rows={rows.slice(0, 25)} onSelect={(row) => setSelectedInsightIndex(rows.indexOf(row))} />
-            {rows.length > 25 ? <p className="px-4 pt-3 text-xs text-muted-foreground">Showing 25 of {rows.length} loaded insights. Download CSV for every row.</p> : null}
-          </> : null}
+            <TabsContent value={view} className="min-w-0">
+              {view === "run" && run ? (
+                <div className="flex flex-wrap items-end gap-3 border-b px-4 py-3 sm:px-5">
+                  <label className="grid min-w-0 flex-1 basis-64 gap-1.5 text-sm font-medium">
+                    Run
+                    <select
+                      className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm font-normal focus-visible:outline-2 focus-visible:outline-ring"
+                      value={run.id}
+                      onChange={(event) => {
+                        setSelectedRunId(Number(event.target.value));
+                        setOffset(0);
+                      }}
+                    >
+                      {runs.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          Run #{option.id}{option.query ? ` · ${option.query}` : ""}
+                          {option.created_at ? ` · ${formatDate(option.created_at)}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Button asChild variant="ghost" size="sm">
+                    <Link to={`/runs/${run.id}/results`}>Run results <RiArrowRightLine data-icon="inline-end" /></Link>
+                  </Button>
+                </div>
+              ) : null}
+              {view === "publication" && publication ? (
+                <div className="border-b px-4 py-3 sm:px-5">
+                  <label className="grid max-w-2xl min-w-0 gap-1.5 text-sm font-medium">
+                    Publication
+                    <select
+                      className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm font-normal focus-visible:outline-2 focus-visible:outline-ring"
+                      value={publication.paper_id}
+                      onChange={(event) => {
+                        setSelectedPaperId(event.target.value);
+                        setOffset(0);
+                      }}
+                    >
+                      {publications.map((option) => (
+                        <option key={option.paper_id} value={option.paper_id}>
+                          {option.publication_title || option.paper_id}
+                          {option.publication_year ? ` · ${option.publication_year}` : ""}
+                          {option.publication_title ? ` · ${option.paper_id}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+              {loading ? <TableSkeleton /> : null}
+              {queryError ? <InlineQueryError title="Insights could not be loaded" error={queryError} /> : null}
+              {!loading && !queryError && !rows.length ? (
+                <EmptyState
+                  icon={RiFileList3Line}
+                  title={total ? "No insights on this page" : "No insights yet"}
+                  description={total
+                    ? "Use Previous to see the remaining insights."
+                    : view === "overall" ? "Dataset insights appear here after extraction." : `No dataset insights are available for ${viewLabel}.`}
+                />
+              ) : null}
+              {rows.length ? <InsightSummaryList rows={rows} onSelect={setSelectedInsight} /> : null}
+              {insightsQuery.data && total ? (
+                <ResultPagination offset={offset} pageSize={INSIGHT_PAGE_SIZE} shown={rows.length} total={total} loading={insightsQuery.isFetching} onOffset={setOffset} />
+              ) : null}
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
       <Sheet open={downloadOpen} onOpenChange={setDownloadOpen}>
@@ -1055,8 +1133,7 @@ function InsightsPage() {
           <SheetHeader>
             <SheetTitle>Download insights</SheetTitle>
             <SheetDescription>
-              Choose the columns to include. The CSV contains every available
-              insight row, not only this preview.
+              Choose the columns to include. The CSV contains every insight for {viewLabel}.
             </SheetDescription>
           </SheetHeader>
           <div className="flex items-center justify-between gap-3 px-4">
@@ -1131,7 +1208,7 @@ function InsightsPage() {
         open={Boolean(selectedInsight)}
         onOpenChange={(open) => {
           if (!open) {
-            setSelectedInsightIndex(null);
+            setSelectedInsight(null);
           }
         }}
       >

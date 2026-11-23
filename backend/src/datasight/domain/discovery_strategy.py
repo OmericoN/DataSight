@@ -8,15 +8,17 @@ import math
 import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
+from datasight.domain.discovery import REUSE_SEARCH, mentions_reuse
 from datasight.domain.schemas import UMDatasetRecord
 
 
 class DiscoveryPhase(StrEnum):
     DIRECT = "direct"
+    SOURCE_CITATIONS = "source_citations"
     EXACT = "exact"
     RELATED = "related"
     FOCUSED = "focused"
@@ -35,7 +37,9 @@ class EvidenceReason(StrEnum):
     DATASET_CITATION = "dataset_citation"
     IDENTIFIER_MENTION = "identifier_mention"
     TITLE_MENTION = "title_mention"
-    RELATED_WORK = "related_work"
+    SOURCE_CITATION = "source_paper_citation"
+    RELATED_WORK_CITATION = "related_work_citation"
+    REUSE_LANGUAGE = "reuse_language"
     FOCUSED_TOPIC = "focused_topic"
     FOCUSED_KEYWORD = "focused_keyword"
     RANDOM_SAMPLE = "random_sample"
@@ -43,11 +47,13 @@ class EvidenceReason(StrEnum):
 
 
 EVIDENCE: dict[EvidenceReason, tuple[EvidenceTier, int]] = {
-    EvidenceReason.DATASET_LINK: (EvidenceTier.DIRECT, 100),
+    EvidenceReason.DATASET_LINK: (EvidenceTier.DIRECT, 90),
     EvidenceReason.DATASET_CITATION: (EvidenceTier.DIRECT, 95),
     EvidenceReason.IDENTIFIER_MENTION: (EvidenceTier.EXACT, 85),
     EvidenceReason.TITLE_MENTION: (EvidenceTier.EXACT, 75),
-    EvidenceReason.RELATED_WORK: (EvidenceTier.EXPANDED, 60),
+    EvidenceReason.SOURCE_CITATION: (EvidenceTier.EXPANDED, 65),
+    EvidenceReason.RELATED_WORK_CITATION: (EvidenceTier.EXPANDED, 60),
+    EvidenceReason.REUSE_LANGUAGE: (EvidenceTier.EXPANDED, 45),
     EvidenceReason.FOCUSED_TOPIC: (EvidenceTier.EXPANDED, 45),
     EvidenceReason.FOCUSED_KEYWORD: (EvidenceTier.EXPANDED, 45),
     EvidenceReason.RANDOM_SAMPLE: (EvidenceTier.EXPANDED, 40),
@@ -94,7 +100,6 @@ class StrategyQuery:
     sort: str | None = "relevance_score:desc"
     sample_size: int | None = None
     sample_seed: int | None = None
-    matched_dataset_ids_by_work: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     catalog_work_to_dataset_ids: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     exact_terms_to_dataset_ids: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     max_results: int = 1000
@@ -163,11 +168,17 @@ def profile_um_catalog(
         _phase_profile(
             DiscoveryPhase.DIRECT,
             "Direct evidence",
-            "Structured OpenAlex dataset links and citations.",
+            "Dataset links and citations, including a search for reuse language in citing papers.",
             work_count,
-            2 * math.ceil(work_count / 100),
-            0.0001,
+            3 * math.ceil(work_count / 100),
+            (0.001 + 2 * 0.0001) / 3,
             total,
+        ),
+        _phase_profile(
+            DiscoveryPhase.SOURCE_CITATIONS,
+            "Citations of source papers",
+            "Search papers citing likely original studies found during direct discovery for signs of data reuse. Call count depends on the results.",
+            0, 0, 0.001, total,
         ),
         _phase_profile(
             DiscoveryPhase.EXACT,
@@ -180,11 +191,11 @@ def profile_um_catalog(
         ),
         _phase_profile(
             DiscoveryPhase.RELATED,
-            "Related works",
-            "Works explicitly related to catalog records by OpenAlex.",
+            "Citations of related works",
+            "Search for reuse language in papers citing works already listed in the UM catalog.",
             len(related_ids),
             math.ceil(len(related_ids) / 100),
-            0.0001,
+            0.001,
             total,
         ),
         _phase_profile(
@@ -247,30 +258,21 @@ def build_direct_queries(
             work_to_datasets.setdefault(work_id, set()).add(record.um_dataset_id)
     work_ids = sorted(work_to_datasets)
     queries: list[StrategyQuery] = []
+    reuse_queries: list[StrategyQuery] = []
     for batch in _chunks(work_ids, 100):
-        queries.extend(
-            [
-                StrategyQuery(
-                    phase=DiscoveryPhase.DIRECT,
-                    evidence_reason=EvidenceReason.DATASET_LINK,
-                    filters={**filters, "datasets": batch},
-                    sort="cited_by_count:desc",
-                    catalog_work_to_dataset_ids={
-                        work_id: tuple(sorted(work_to_datasets[work_id])) for work_id in batch
-                    },
-                ),
-                StrategyQuery(
-                    phase=DiscoveryPhase.DIRECT,
-                    evidence_reason=EvidenceReason.DATASET_CITATION,
-                    filters={**filters, "cites": batch},
-                    sort="cited_by_count:desc",
-                    catalog_work_to_dataset_ids={
-                        work_id: tuple(sorted(work_to_datasets[work_id])) for work_id in batch
-                    },
-                ),
-            ]
+        citation = StrategyQuery(
+            phase=DiscoveryPhase.DIRECT,
+            evidence_reason=EvidenceReason.DATASET_CITATION,
+            filters={**filters, "cites": batch},
+            sort="cited_by_count:desc",
+            catalog_work_to_dataset_ids={work_id: tuple(sorted(work_to_datasets[work_id])) for work_id in batch},
         )
-    return queries
+        queries.extend([
+            citation,
+            replace(citation, evidence_reason=EvidenceReason.DATASET_LINK, filters={**filters, "datasets": batch}),
+        ])
+        reuse_queries.append(replace(citation, query=REUSE_SEARCH, sort="relevance_score:desc"))
+    return queries + reuse_queries
 
 
 def build_exact_queries(
@@ -313,8 +315,9 @@ def build_exact_queries(
     return queries
 
 
-def build_related_queries(
-    records: Sequence[UMDatasetRecord],
+def build_citing_queries(
+    work_ids: Iterable[str],
+    phase: DiscoveryPhase,
     *,
     from_year: int | None = None,
     to_year: int | None = None,
@@ -322,28 +325,16 @@ def build_related_queries(
     language: str | None = None,
 ) -> list[StrategyQuery]:
     filters = _base_filters(from_year, to_year, publication_types, language)
-    related_to_datasets: dict[str, set[str]] = {}
-    for record in records:
-        dataset_id = _id_tail(record.um_dataset_id)
-        for value in _openalex(record).get("related_works") or []:
-            related_id = _id_tail(value)
-            if related_id.startswith("W"):
-                related_to_datasets.setdefault(related_id, set()).add(dataset_id)
-    queries: list[StrategyQuery] = []
-    for batch in _chunks(sorted(related_to_datasets), 100):
-        queries.append(
-            StrategyQuery(
-                phase=DiscoveryPhase.RELATED,
-                evidence_reason=EvidenceReason.RELATED_WORK,
-                filters={**filters, "openalex": batch},
-                sort="cited_by_count:desc",
-                matched_dataset_ids_by_work={
-                    work_id: tuple(sorted(related_to_datasets[work_id])) for work_id in batch
-                },
-                max_results=len(batch),
-            )
+    reason = EvidenceReason.SOURCE_CITATION if phase == DiscoveryPhase.SOURCE_CITATIONS else EvidenceReason.RELATED_WORK_CITATION
+    return [
+        StrategyQuery(
+            phase=phase,
+            evidence_reason=reason,
+            query=REUSE_SEARCH,
+            filters={**filters, "cites": batch},
         )
-    return queries
+        for batch in _chunks(sorted(set(work_ids)), 100)
+    ]
 
 
 def build_focused_queries(
@@ -477,6 +468,8 @@ def rank_strategy_candidates(
             matched_ids |= _work_ids(raw_mapping.get("datasets")) & known_ids
         if EvidenceReason.DATASET_CITATION in reasons:
             matched_ids |= _work_ids(raw_mapping.get("referenced_works")) & known_ids
+        if matched_ids and mentions_reuse(item):
+            reasons.add(EvidenceReason.REUSE_LANGUAGE)
 
         candidate = dict(item)
         candidate.update(

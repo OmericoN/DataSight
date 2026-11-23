@@ -85,6 +85,14 @@ export type PaginatedInsightsResponse = InsightsResponse & {
   limit: number;
 };
 
+export type InsightRunOption = Pick<PipelineRunSummary, "id" | "query" | "status" | "created_at">;
+
+export type InsightPublicationOption = {
+  paper_id: string;
+  publication_title: string | null;
+  publication_year: number | null;
+};
+
 export type CsvDownload = {
   blob: Blob;
   filename: string;
@@ -126,7 +134,7 @@ export type ExtractionProgress = { phase: string; attempts_this_invocation: numb
   call_limit: number; time_limit_seconds: number; elapsed_seconds: number;
   completed: Record<string, number>; calls_by_phase: Record<string, number> };
 
-export type DiscoveryPhaseId = "direct" | "exact" | "related" | "focused" | "random" | "manual";
+export type DiscoveryPhaseId = "direct" | "source_citations" | "exact" | "related" | "focused" | "random" | "manual";
 
 export type UMProfilePhase = {
   id: DiscoveryPhaseId;
@@ -161,7 +169,7 @@ export type OpenAlexStatus = {
 };
 
 export type DiscoveryPreviewRequest = {
-  strategy_version: 2;
+  strategy_version: 3;
   mode: "catalog_funnel" | "random" | "manual";
   focus_query: string;
   manual_query: string | null;
@@ -203,7 +211,7 @@ export type DiscoveryCandidateListResponse = {
 
 export type DiscoveryPreview = {
   preview_id: string;
-  strategy_version: 2;
+  strategy_version: 3;
   strategy_fingerprint: string;
   catalog_fingerprint: string;
   language: string | null;
@@ -408,8 +416,9 @@ export const api = {
       `/api/v1/runs/${runId}/discovery-candidates?${params}`,
     );
   },
-  runResults: (runId: number, offset = 0, limit = 50) => {
+  runResults: (runId: number, offset = 0, limit = 50, datasetsOnly = false) => {
     const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+    if (datasetsOnly) params.set("datasets_only", "true");
     return request<PaginatedInsightsResponse>(`/api/v1/runs/${runId}/insights?${params}`);
   },
   runCandidates: (runId: number, offset = 0, limit = 50) => {
@@ -421,18 +430,23 @@ export const api = {
     columns.forEach((column) => params.append("columns", column));
     return requestBlob(`/api/v1/runs/${runId}/candidates/export.csv?${params}`);
   },
-  downloadRunInsightResultsCsv: (runId: number, columns: string[]) => {
+  downloadRunInsightResultsCsv: (runId: number, columns: string[], datasetsOnly = false) => {
     const params = new URLSearchParams();
     columns.forEach((column) => params.append("columns", column));
+    if (datasetsOnly) params.set("datasets_only", "true");
     return requestBlob(`/api/v1/runs/${runId}/insights/export.csv?${params}`);
   },
-  insights: (limit = 100) => {
-    const params = new URLSearchParams({ limit: String(limit) });
-    return request<InsightsResponse>(`/api/v1/insights?${params}`);
+  insightRuns: () => request<InsightRunOption[]>("/api/v1/insights/runs"),
+  insightPublications: () => request<InsightPublicationOption[]>("/api/v1/insights/publications"),
+  insights: (limit = 100, offset = 0, paperId?: string) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (paperId) params.set("paper_id", paperId);
+    return request<PaginatedInsightsResponse>(`/api/v1/insights?${params}`);
   },
-  downloadInsightsCsv: (columns: string[]) => {
+  downloadInsightsCsv: (columns: string[], paperId?: string) => {
     const params = new URLSearchParams();
     columns.forEach((column) => params.append("columns", column));
+    if (paperId) params.set("paper_id", paperId);
     return requestBlob(`/api/v1/insights/export.csv?${params}`);
   },
   umDatasets: (filters: UMDatasetListParams = {}) => {

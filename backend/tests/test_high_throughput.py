@@ -80,13 +80,13 @@ def test_dispatch_plan_schedules_bounded_batches(monkeypatch):
 
 def test_llm_dispatch_claims_one_publication_per_task(monkeypatch):
     FakeRepo.all_terminal = False
-    FakeRepo.queued_counts = {"extract_features": 9}
+    FakeRepo.queued_counts = {"detect_mentions": 9, "extract_features": 9}
     monkeypatch.setattr(high_throughput, "PipelineRepository", FakeRepo)
 
     plan = high_throughput.build_dispatch_plan(9, batch_size=4, max_batches=2)
 
-    assert len(plan.batches) == 2
-    assert all(batch.stage == PipelineStage.EXTRACT_FEATURES and batch.batch_size == 1 and batch.queue == "llm" for batch in plan.batches)
+    assert [batch.stage for batch in plan.batches] == [PipelineStage.DETECT_MENTIONS] * 2 + [PipelineStage.EXTRACT_FEATURES] * 2
+    assert all(batch.batch_size == 1 and batch.queue == "llm" for batch in plan.batches)
 
 
 def test_dispatch_plan_finalizes_once_when_terminal(monkeypatch):

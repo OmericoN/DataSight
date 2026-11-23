@@ -6,6 +6,7 @@ import json
 import time
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from threading import Event, local
 from typing import Any, Callable, TypeVar
 
@@ -71,27 +72,41 @@ def prompt_character_count(messages: list[dict[str, str]]) -> int:
     return sum(len(value) for message in messages for value in message.values())
 
 
+@lru_cache(maxsize=32)
+def _prompt_template(instructions: str, model: type[BaseModel]) -> tuple[str, str]:
+    schema_json = json.dumps(strict_schema(model), separators=(",", ":"))
+    return instructions + "\nReturn only JSON matching this schema:\n" + schema_json, schema_json
+
+
+@lru_cache(maxsize=32)
+def _system_tokens(system: str) -> int:
+    return count_tokens(system)
+
+
 def payload_for(
     instructions: str, data: Any, model: type[BaseModel], *, max_prompt_chars: int | None = None,
+    max_tokens: int = MAX_TOKENS,
 ) -> dict[str, Any]:
-    schema = strict_schema(model)
-    system = instructions + "\nReturn only JSON matching this schema:\n" + json.dumps(schema, separators=(",", ":"))
+    if not 1 <= max_tokens <= MAX_TOKENS:
+        raise ValueError(f"Output budget must be between 1 and {MAX_TOKENS} tokens")
+    system, schema_json = _prompt_template(instructions, model)
     user = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     if prompt_character_count(messages) > (max_prompt_chars if max_prompt_chars is not None else MAX_PROMPT_CHARS):
         raise RequestTooLarge("Request exceeds the conservative context budget")
     # Count model tokens in both messages; reserve chat-template overhead and output.
-    prompt_tokens = count_tokens(system) + count_tokens(user)
-    if prompt_tokens + MAX_TOKENS + TEMPLATE_RESERVE > CONTEXT_TOKENS:
+    # Every new user message still goes through the pinned model/revision check.
+    prompt_tokens = count_tokens(user) + _system_tokens(system)
+    if prompt_tokens + max_tokens + TEMPLATE_RESERVE > CONTEXT_TOKENS:
         raise RequestTooLarge("Request exceeds the conservative context budget")
     return {
         "model": config.LLM_MODEL,
         "messages": messages,
         "temperature": 0,
         "stream": False,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "chat_template_kwargs": {"enable_thinking": False},
-        "response_format": {"type": "json_schema", "json_schema": {"name": model.__name__, "strict": True, "schema": schema}},
+        "response_format": {"type": "json_schema", "json_schema": {"name": model.__name__, "strict": True, "schema": json.loads(schema_json)}},
     }
 
 

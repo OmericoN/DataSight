@@ -276,6 +276,13 @@ def test_conservative_grouping_never_uses_article_identifiers_as_dataset_identit
     assert len(consolidate([entry("Alpha"), entry("An alias")])) == 1
     assert len(consolidate([entry("Alpha", "research_article"), entry("Beta", "research_article")])) == 2
     assert len(consolidate([entry("Alpha"), entry("Alpha", literal="10.1/other")])) == 2
+    assert len(consolidate([entry("Alpha"), entry("Beta", literal="DOI: 10.1/DATA")])) == 1
+    versions = [entry("Alpha"), entry("Alpha", literal="10.1/other")]
+    for version in versions:
+        doi = version.identity.identifiers.values[0]
+        handle = doi.value.model_copy(update={"scheme": "handle", "literal": "hdl:1234/shared"})
+        version.identity.identifiers.values.append(doi.model_copy(update={"value": handle}))
+    assert len(consolidate(versions)) == 2
 
 
 def test_duplicate_anchor_consolidation_retains_both_occurrence_feature_sets():
@@ -394,7 +401,7 @@ def test_shared_run_boundary_includes_zero_detector_candidates_and_stops_on_outa
     def extract(repo, client, run_id, row):
         visited.append(row["paper_id"])
         return {"status": "interrupted" if row["paper_id"] == "gpu-off" else 'failed' if row['paper_id'] == 'bad-source' else "successful", "datasets": 0}
-    monkeypatch.setattr(llm_extraction, 'prepare_source', lambda row: (_ for _ in ()).throw(ValueError('No PDF')))
+    monkeypatch.setattr(llm_extraction, 'prepare_source', lambda row, **kwargs: (_ for _ in ()).throw(ValueError('No PDF')))
     monkeypatch.setattr(llm_extraction, "PipelineRepository", Repo)
     monkeypatch.setattr(llm_extraction, "GatewayClient", GroundedClient)
     monkeypatch.setattr(llm_extraction, "extract_publication", extract)

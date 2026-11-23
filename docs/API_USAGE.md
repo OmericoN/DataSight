@@ -59,7 +59,7 @@ http://localhost:8000/api/v1
 ```powershell
 curl -X POST http://localhost:8000/api/v1/discovery/preview `
   -H "Content-Type: application/json" `
-  -d "{\"strategy_version\":2,\"mode\":\"catalog_funnel\",\"focus_query\":\"\",\"manual_query\":null,\"from_year\":2020,\"to_year\":2026,\"publication_types\":[\"article\",\"preprint\"],\"discovery_limit\":500,\"processing_limit\":50,\"max_cost_usd\":0.25}"
+  -d "{\"strategy_version\":3,\"mode\":\"catalog_funnel\",\"focus_query\":\"\",\"manual_query\":null,\"from_year\":2020,\"to_year\":2026,\"publication_types\":[\"article\",\"preprint\"],\"discovery_limit\":500,\"processing_limit\":50,\"max_cost_usd\":0.25}"
 ```
 
 Review the returned candidates, then launch using the unexpired preview:
@@ -77,7 +77,7 @@ Seeded random-sample example:
 ```powershell
 curl -X POST http://localhost:8000/api/v1/discovery/preview `
   -H "Content-Type: application/json" `
-  -d "{\"strategy_version\":2,\"mode\":\"random\",\"focus_query\":\"\",\"manual_query\":null,\"random_seed\":42,\"from_year\":2020,\"to_year\":2026,\"publication_types\":[\"article\",\"preprint\"],\"discovery_limit\":500,\"processing_limit\":50,\"max_cost_usd\":0.25}"
+  -d "{\"strategy_version\":3,\"mode\":\"random\",\"focus_query\":\"\",\"manual_query\":null,\"random_seed\":42,\"from_year\":2020,\"to_year\":2026,\"publication_types\":[\"article\",\"preprint\"],\"discovery_limit\":500,\"processing_limit\":50,\"max_cost_usd\":0.25}"
 ```
 
 Response:

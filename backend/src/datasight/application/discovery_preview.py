@@ -11,15 +11,17 @@ from typing import Any
 from uuid import uuid4
 
 from datasight.config import CODE_VERSION
+from datasight.domain.discovery import CatalogPublications
 from datasight.domain.discovery_strategy import (
     DiscoveryPhase,
+    EvidenceReason,
     StrategyQuery,
+    build_citing_queries,
     build_direct_queries,
     build_exact_queries,
     build_focused_queries,
     build_manual_query,
     build_random_query,
-    build_related_queries,
     profile_um_catalog,
     rank_strategy_candidates,
     structured_direct_dataset_ids,
@@ -29,7 +31,7 @@ from datasight.infrastructure.persistence.repository import PipelineRepository
 from datasight.infrastructure.pubfetcher.openalex import OpenAlexApiError, OpenAlexClient, openalex_work_id
 
 PREVIEW_TTL = timedelta(minutes=30)
-STRATEGY_VERSION = 2
+STRATEGY_VERSION = 3
 
 
 class DiscoveryPreviewError(RuntimeError):
@@ -126,6 +128,9 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
     profile = profile_um_catalog(records, resolved_topics)
 
     fetched: list[dict[str, Any]] = []
+    catalog = CatalogPublications.from_records(records) if mode == "catalog_funnel" else None
+    source_papers: set[str] = set()
+    excluded_catalog_ids: set[str] = set()
     completed_phases: list[str] = []
     phase_results: dict[str, dict[str, Any]] = {}
     actual_cost = 0.0
@@ -150,6 +155,7 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
             "fetched": 0,
             "reported_total": 0,
             "unique_added": 0,
+            "catalog_hits_skipped": 0,
             "ready_after_phase": _ready_count(fetched, records),
             "calls": 0,
             "cost_usd": 0.0,
@@ -215,16 +221,22 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
             result["cost_usd"] = round(float(result["cost_usd"]) + response.cost_usd, 6)
             for work in response.works:
                 paper_id = _paper_id(work)
+                if catalog and (reason := catalog.exclusion_reason(work)):
+                    result["catalog_hits_skipped"] += 1
+                    excluded_catalog_ids.add(paper_id)
+                    if reason == "source_title" and paper_id.startswith("W") and paper_id not in catalog.work_ids:
+                        source_papers.add(paper_id)
+                    continue
                 if phase == DiscoveryPhase.RANDOM:
                     work["random_sample_rank"] = len(fetched) + 1
-                work["discovery_reasons"] = sorted(
-                    set(work.get("discovery_reasons") or []) | {strategy_query.evidence_reason.value}
-                )
+                reasons = set(work.get("discovery_reasons") or []) | {strategy_query.evidence_reason.value}
+                if phase == DiscoveryPhase.DIRECT and strategy_query.query:
+                    reasons.add(EvidenceReason.REUSE_LANGUAGE.value)
+                work["discovery_reasons"] = sorted(reasons)
                 verified_ids = verified_exact_dataset_ids(work, strategy_query)
                 direct_ids = structured_direct_dataset_ids(work, strategy_query)
                 work["matched_um_dataset_ids"] = sorted(
                     set(work.get("matched_um_dataset_ids") or [])
-                    | set(strategy_query.matched_dataset_ids_by_work.get(paper_id, ()))
                     | set(verified_ids)
                     | set(direct_ids)
                 )
@@ -236,7 +248,7 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         after_ids = {_paper_id(item) for item in fetched}
         result["unique_added"] = len(after_ids - before_ids)
         result["ready_after_phase"] = _ready_count(fetched, records)
-        result["duplicate_count"] = max(0, int(result["fetched"]) - int(result["unique_added"]))
+        result["duplicate_count"] = int(result["fetched"]) - int(result["catalog_hits_skipped"]) - int(result["unique_added"])
         result["duplicate_rate"] = round(
             float(result["duplicate_count"]) / int(result["fetched"]), 4
         ) if result["fetched"] else 0.0
@@ -290,16 +302,19 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         if not halted and _ready_count(fetched, records) >= processing_limit:
             stop_reason = "ready_target_met"
             halted = True
+        direct_sources = source_papers.copy()
+        if not halted and direct_sources:
+            phase = DiscoveryPhase.SOURCE_CITATIONS
+            halted = execute_phase(phase, build_citing_queries(direct_sources, phase, **common), stop_after_each_query=True)
         if not halted:
             halted = execute_phase(DiscoveryPhase.EXACT, build_exact_queries(records, **common))
             if not halted and _ready_count(fetched, records) >= processing_limit:
                 stop_reason = "ready_target_met"
                 halted = True
-        if not halted:
-            halted = execute_phase(DiscoveryPhase.RELATED, build_related_queries(records, **common))
-            if not halted and _ready_count(fetched, records) >= processing_limit:
-                stop_reason = "ready_target_met"
-                halted = True
+        if not halted and catalog:
+            seeds = (catalog.related_work_ids | source_papers) - direct_sources - catalog.work_ids
+            phase = DiscoveryPhase.RELATED
+            halted = execute_phase(phase, build_citing_queries(seeds, phase, **common), stop_after_each_query=True)
         if not halted:
             unresolved_names = [
                 name for name in unresolved_profile.get("top_topics") or [] if name not in topic_cache
@@ -378,6 +393,7 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
 
     preview_id = str(uuid4())
     expires_at = datetime.now(UTC) + PREVIEW_TTL
+    unique_fetched = len({_paper_id(item) for item in fetched} | excluded_catalog_ids)
     if mode == "random":
         estimated_cost = round(math.ceil(discovery_limit / 100) * 0.0001, 4)
     elif mode == "manual":
@@ -416,8 +432,9 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         "metrics": {
             "pipeline_ready_definition": "open_access_pdf_url_present_unverified",
             "target_met": ready_count >= processing_limit,
-            "unique_fetched": len({_paper_id(item) for item in fetched}),
-            "duplicates_seen": max(0, len(fetched) - len({_paper_id(item) for item in fetched})),
+            "unique_catalog_works_skipped": len(excluded_catalog_ids),
+            "unique_fetched": unique_fetched,
+            "duplicates_seen": sum(result["fetched"] for result in phase_results.values()) - unique_fetched,
             "cost_per_retained_candidate": round(actual_cost / len(candidates), 6) if candidates else None,
             "cost_per_pdf_ready_candidate": round(actual_cost / ready_count, 6) if ready_count else None,
         },

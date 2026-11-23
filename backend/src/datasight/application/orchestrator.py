@@ -10,7 +10,7 @@ from datasight.application import pipeline_services as services
 from datasight.application.discovery_preview import validate_discovery_preview
 from datasight.config import DEFAULT_UM_DATASETS_PATH
 from datasight.domain.run_strategy import RunStrategy
-from datasight.domain.candidate_detection import DETECTOR_VERSION
+from datasight.domain.candidate_detection import SCREENING_VERSION
 from datasight.infrastructure.ingestion.renderer import (
     DEFAULT_RENDER_PROFILE,
     RENDERER_VERSION,
@@ -257,7 +257,7 @@ def _run_config(
         "code_version": (preview.get("payload") or {}).get("code_version"),
         "renderer_version": RENDERER_VERSION,
         "render_profile": render_profile,
-        "detector_version": DETECTOR_VERSION,
+        "detector_version": SCREENING_VERSION,
         "extraction": extraction_configuration(render_profile=render_profile),
         "processing_limit": processing_limit,
         "excluded_candidate_ids": excluded_candidate_ids or [],

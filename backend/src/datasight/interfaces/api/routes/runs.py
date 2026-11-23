@@ -14,7 +14,7 @@ from datasight.interfaces.api.schemas import (
     StageRunCreateRequest,
 )
 from datasight.application import orchestrator
-from datasight.application.discovery_preview import DiscoveryPreviewError, validate_discovery_preview
+from datasight.application.discovery_preview import DiscoveryPreviewError
 from datasight.application.stage_registry import (
     MissingStageArgument,
     PipelineStage,
@@ -32,7 +32,6 @@ router = APIRouter(tags=["runs"])
 @router.post("/runs", response_model=RunCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 def create_run(request: RunCreateRequest) -> RunCreateResponse:
     try:
-        validate_discovery_preview(request.preview_id, request.processing_limit)
         result = orchestrator.enqueue_run_all(
             preview_id=request.preview_id,
             processing_limit=request.processing_limit,

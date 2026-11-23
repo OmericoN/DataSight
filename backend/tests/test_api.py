@@ -74,8 +74,8 @@ class FakeInsightRepo:
     def __exit__(self, exc_type, exc_val, exc_tb):
         return None
 
-    def export_insight_rows(self):
-        return self.rows
+    def export_insight_rows(self, *, paper_id=None):
+        return [row for row in self.rows if paper_id is None or row["paper_id"] == paper_id]
 
 
 def test_insights_returns_canonical_columns_with_limited_preview(monkeypatch):
@@ -86,6 +86,24 @@ def test_insights_returns_canonical_columns_with_limited_preview(monkeypatch):
     assert response.status_code == 200
     assert response.json()["columns"] == list(INSIGHT_COLUMNS)
     assert response.json()["rows"][0]["discovery_mode"] == "catalog_funnel"
+
+
+def test_insights_paginates_and_exports_only_the_selected_publication(monkeypatch):
+    class ScopedInsightRepo(FakeInsightRepo):
+        rows = [
+            *FakeInsightRepo.rows,
+            {"paper_id": "W456", "dataset_name": "Other cohort"},
+            {"paper_id": "W123", "dataset_name": "Same paper, second dataset"},
+        ]
+
+    monkeypatch.setattr("datasight.interfaces.api.routes.insights.PipelineRepository", ScopedInsightRepo)
+    page = client.get("/api/v1/insights?limit=1&offset=1&paper_id=W123").json()
+    assert page["total"] == 2
+    assert page["rows"] == [{"paper_id": "W123", "dataset_name": "Same paper, second dataset"}]
+
+    download = client.get("/api/v1/insights/export.csv?paper_id=W123&columns=paper_id")
+    assert download.headers["content-disposition"] == 'attachment; filename="datasight-W123-insights.csv"'
+    assert list(csv.DictReader(io.StringIO(download.text))) == [{"paper_id": "W123"}] * 2
 
 
 def test_insight_csv_exports_all_rows_with_selected_canonical_columns(monkeypatch):
@@ -153,7 +171,6 @@ def test_create_run_enqueues_preview_backed_pipeline(monkeypatch):
         return {"pipeline_run_id": 7, "task_id": "task-1", "status": "queued"}
 
     monkeypatch.setattr("datasight.interfaces.api.routes.runs.orchestrator.enqueue_run_all", fake_enqueue_run_all)
-    monkeypatch.setattr("datasight.interfaces.api.routes.runs.validate_discovery_preview", lambda *args: {})
 
     response = client.post(
         "/api/v1/runs",
@@ -176,7 +193,6 @@ def test_create_run_accepts_high_throughput_strategy(monkeypatch):
         return {"pipeline_run_id": 8, "task_id": "task-2", "status": "queued"}
 
     monkeypatch.setattr("datasight.interfaces.api.routes.runs.orchestrator.enqueue_run_all", fake_enqueue_run_all)
-    monkeypatch.setattr("datasight.interfaces.api.routes.runs.validate_discovery_preview", lambda *args: {})
 
     response = client.post(
         "/api/v1/runs",
@@ -189,6 +205,28 @@ def test_create_run_accepts_high_throughput_strategy(monkeypatch):
 
     assert response.status_code == 202
     assert response.json()["pipeline_run_id"] == 8
+
+
+def test_create_run_returns_conflict_for_an_expired_preview(monkeypatch):
+    from datasight.application import discovery_preview
+
+    class FakeRepo:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get_discovery_preview(self, preview_id):
+            assert preview_id == "expired"
+            return None
+
+    monkeypatch.setattr(discovery_preview, "PipelineRepository", FakeRepo)
+
+    response = client.post("/api/v1/runs", json={"preview_id": "expired"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["kind"] == "stale_preview"
 
 
 def test_create_run_rejects_legacy_query_first_fields():
@@ -251,7 +289,7 @@ def test_discovery_profile_and_openalex_status_contracts(monkeypatch):
 def test_discovery_preview_rejects_removed_lane_contract():
     response = client.post(
         "/api/v1/discovery/preview",
-        json={"strategy_version": 2, "mode": "catalog_funnel", "lanes": []},
+        json={"strategy_version": 3, "mode": "catalog_funnel", "lanes": []},
     )
 
     assert response.status_code == 422

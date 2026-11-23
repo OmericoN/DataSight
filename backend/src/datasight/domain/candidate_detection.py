@@ -9,6 +9,7 @@ from typing import Any, Iterable
 from datasight.domain.schemas import MentionCandidate, UMDatasetRecord
 
 DETECTOR_VERSION = "rules-v3"
+SCREENING_VERSION = "dataset-use-model-v1"
 SECTION_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+)$", re.MULTILINE)
 PARAGRAPH_RE = re.compile(r"(?m)(?P<paragraph>\S(?:.*?\S)?)(?=\n[ \t]*\n|\s*\Z)", re.DOTALL)
 

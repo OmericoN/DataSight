@@ -293,7 +293,7 @@ def _discovery_preview(args: argparse.Namespace) -> dict[str, Any]:
         raise SystemExit("--processing-limit cannot exceed --discovery-limit")
     preview = create_discovery_preview(
         {
-            "strategy_version": 2,
+            "strategy_version": 3,
             "mode": args.mode,
             "focus_query": args.focus_query,
             "manual_query": args.manual_query,

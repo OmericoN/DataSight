@@ -74,7 +74,7 @@ const discoveryProfile = {
 
 const discoveryPreview = {
   preview_id: "preview-123",
-  strategy_version: 2,
+  strategy_version: 3,
   strategy_fingerprint: "strategy-123",
   catalog_fingerprint: "catalog-123",
   expires_at: "2026-08-04T12:30:00Z",
@@ -758,6 +758,47 @@ describe("App routed workflow", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:insights");
     fireEvent.click(screen.getByRole("button", { name: /View details for Health cohort/ }));
     expect(screen.getByText("Complete field values and evidence for this dataset insight.")).toBeInTheDocument();
+  });
+
+  it("shows run and publication insights within their selected scopes", async () => {
+    const baseFetch = defaultFetchMock();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/insights/runs") {
+        return response([
+          { id: 91, query: "Latest", status: "successful", created_at: null },
+          { id: 90, query: "Earlier", status: "successful", created_at: null },
+        ]);
+      }
+      if (url.pathname === "/api/v1/insights/publications") {
+        return response([
+          { paper_id: "W123", publication_title: "Cohort analysis", publication_year: 2024 },
+          { paper_id: "W456", publication_title: "Survey outcomes", publication_year: null },
+        ]);
+      }
+      if (url.pathname === "/api/v1/insights" || /\/runs\/(90|91)\/insights$/.test(url.pathname)) {
+        const dataset = url.pathname.startsWith("/api/v1/runs/")
+          ? `Dataset from run ${url.pathname.split("/")[4]}`
+          : `Dataset for ${url.searchParams.get("paper_id") ?? "all publications"}`;
+        return response({ columns: insightColumns, rows: [{ dataset_name: dataset }], total: 1, offset: 0, limit: 25 });
+      }
+      return baseFetch(input, init);
+    });
+    renderApp(fetchMock, "/insights");
+    await screen.findByText("Dataset for all publications");
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "By run" }), { button: 0 });
+    await screen.findByText("Dataset from run 91");
+    fireEvent.change(screen.getByLabelText("Run", { exact: true }), { target: { value: "90" } });
+    await screen.findByText("Dataset from run 90");
+    expect(screen.getByRole("link", { name: "Run results" })).toHaveAttribute("href", "/runs/90/results");
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "By publication" }), { button: 0 });
+    await screen.findByText("Dataset for W123");
+    fireEvent.change(screen.getByLabelText("Publication", { exact: true }), { target: { value: "W456" } });
+    await screen.findByText("Dataset for W456");
+    fireEvent.click(screen.getByRole("button", { name: "Download CSV" }));
+    expect(screen.getByText(/contains every insight for this publication/)).toBeInTheDocument();
   });
 
   it("disables empty insight exports and reports generation failures", async () => {

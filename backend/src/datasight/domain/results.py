@@ -62,6 +62,9 @@ class ConversionResult:
             self.conversion_time = datetime.now()
 
 
+RENDERER_VERSION = "tei-renderer-v7"
+
+
 @dataclass
 class RenderResult:
     """Result of a TEI XML to Markdown rendering operation."""
@@ -77,7 +80,7 @@ class RenderResult:
     references_count: int = 0
     sha256: Optional[str] = None
     source_sha256: Optional[str] = None
-    producer_version: str = "tei-renderer-v6"
+    producer_version: str = RENDERER_VERSION
     profile: str = "pruned"
     warnings: list[str] | None = None
     quality_metrics: dict[str, Any] | None = None

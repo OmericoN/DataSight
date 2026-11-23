@@ -114,6 +114,24 @@ def test_dedupe_and_score_publications_prefers_profile_overlap():
     assert scored[0]["discovery_score"] > 0.7
 
 
+def test_profile_search_uses_known_works_as_citation_seeds_and_excludes_source_identities():
+    title = "Voting behaviour across parliamentary elections"
+    profile = build_discovery_profile([UMDatasetRecord(
+        um_dataset_id="local-1", title=f"Replication files for: {title}", doi="10.1234/data",
+        raw={"openalex": {"id": "W1", "related_works": ["W2", "W3"]}},
+    )], max_terms=1)
+    queries = build_openalex_discovery_queries("", DiscoveryOptions(), profile)
+    assert any(q.reason == "related_work_citation" and q.filters["cites"] == ("W2",) for q in queries)
+    rows = [
+        {"paperId": "W1"}, {"paperId": "W2"}, {"paperId": "W3"},
+        {"paperId": "W4", "doi": "DOI:10.1234/DATA"},
+        {"paperId": "W5", "title": title.upper()},
+        {"paperId": "W6", "title": f"Reassessing {title}", "discovery_reasons": ["um_dataset_reuse_search"]},
+    ]
+    result = dedupe_and_score_publications(rows, "", DiscoveryOptions(), profile)
+    assert [row["paperId"] for row in result] == ["W6"]
+
+
 def test_direct_um_relationships_outrank_terms_and_catalog_seeds_are_excluded():
     profile = build_discovery_profile(
         [

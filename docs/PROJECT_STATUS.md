@@ -1,5 +1,28 @@
 # DataSight Project Status
 
+## Verification on 2026-11-23
+
+- PostgreSQL with pgvector, Redis, the API, both Celery workers, and GROBID
+  started successfully. The database is at Alembic head `20261028_0013`.
+  All 2,748 stored UM records matched the authoritative source. One local
+  evaluation PDF converted to valid TEI and full-body Markdown.
+- All 294 backend tests passed with disposable PostgreSQL and 82% line coverage.
+  Type checking passed. The CPU gateway and GPU service passed their local
+  suites, and the frontend passed 61 tests and its production build.
+- The Smart Discovery v3 working tree returned two PDF-ready selections in both
+  live previews. The catalog funnel retained eight candidates and reached its
+  $0.01 cap after 60 calls ($0.0096 spent). The seeded random preview retained
+  eight candidates in one call ($0.0001 spent).
+- The four runs in the current database ended with errors. All four recorded
+  download failures. The two November 18 runs also recorded extraction errors.
+  Automatic runs end at `extract_features`. Catalog matching and CSV export
+  are explicit operations.
+- The DSRI CPU gateway responded and returned the expected structured HTTP 503
+  for inference while the GPU was unavailable. A fresh GPU-backed run and
+  accuracy measurement on a verified, labeled cohort remain open.
+
+## Earlier assessments
+
 Update, 2026-10-28: whole-publication LLM extraction is implemented with a typed
 evidence schema, immutable snapshots, request checkpoints, manual resume,
 run-isolated results, API/CLI, exports and dashboard inspection. Backend tests,
@@ -28,7 +51,7 @@ The main remaining risk is result quality and run isolation, not basic service w
 | `download_pdf` | Operating with expected external failures | Historical yields were 18/24 and 10/25. Partial failures now produce `completed_with_errors`. | Classify failure reasons, set an acceptable yield target, and add adapter tests for redirects, HTML masquerading as PDF, timeout, and retry. |
 | `grobid_convert` | Operating | 28 XML artifacts; live endpoint returns healthy. Docker healthcheck was repaired to avoid unavailable `curl`. | Add integration fixtures and decide whether GROBID 0.8.0 remains the pinned production version. |
 | `render_document` | Operating | 28 Markdown artifacts and successful historical stages. | Renderer coverage is low; validate headings, references, tables, figures, malformed TEI, and section counts against fixtures. |
-| `detect_mentions` | Operating rules baseline | Historical runs produced 173 and 36 candidates; the demonstrated generic “survey responses” false positive is now excluded. | Build labeled precision/recall evaluation data and tune by section and evidence type. |
+| `detect_mentions` | Model-based screening | The model forwards likely and uncertain dataset use and screens out clear negatives. Historical regex candidates remain available. | Measure publication-level recall and false negatives on a labeled cohort. |
 | `extract_features` | Operating rules-v2 baseline | Now extracts DOI, URL, a unique year, role, and directness instead of only copying evidence text. | Extract creators, aliases, citations, repository IDs, versions, and access dates; add an explicit reprocessing/versioning mechanism. |
 | `match_um_dataset` | Mechanically operating, quality unproven | Catalog integrity is verified; exact DOI/URL, exact title/alias, weighted similarity, and ambiguity handling are implemented. | Reprocess legacy mentions, measure candidate recall and top-k accuracy, tune thresholds, and create a human review workflow. |
 | `export_insights` | Operating | 50 stored insight rows and a 39 KB CSV. | Scope exports to a run, emit nested fields as JSON rather than Python-style representations, and include provenance/version columns. |

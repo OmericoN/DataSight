@@ -21,29 +21,53 @@ class MentionRepositoryMixin:
         detector_version: str = DETECTOR_VERSION,
         limit: int | None = None,
         pipeline_run_id: int | None = None,
+        *,
+        render_profile: str | None = None,
+        renderer_version: str | None = None,
+        include_cached: bool = False,
     ) -> list[dict[str, Any]]:
+        profile_filter = "AND a.metadata->>'profile' = %s" if render_profile else ""
+        version_filter = "AND a.metadata->>'producer_version' = %s" if renderer_version else ""
+        pending_filter = "" if include_cached else """
+            AND NOT EXISTS (
+                SELECT 1
+                FROM mention_detection_runs dr
+                WHERE dr.publication_id = p.id
+                  AND dr.markdown_artifact_id = md.id
+                  AND dr.render_sha256 = md.sha256
+                  AND dr.detector_version = %s
+                  AND dr.status = 'successful'
+            )
+        """
         query = """
             SELECT
                 p.id AS publication_row_id,
                 p.paper_id,
                 md.id AS markdown_artifact_id,
                 md.path,
-                md.sha256 AS render_sha256
+                md.sha256 AS render_sha256,
+                md.metadata AS markdown_metadata,
+                xml.path AS xml_path
             FROM publications p
-            JOIN artifacts md
-              ON md.publication_id = p.id AND md.artifact_type = 'markdown'
+            JOIN LATERAL (
+                SELECT a.* FROM artifacts a
+                WHERE a.publication_id = p.id AND a.artifact_type = 'markdown'
+                  {profile_filter}
+                  {version_filter}
+                ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+            ) md ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT a.path FROM artifacts a
+                WHERE a.publication_id = p.id AND a.artifact_type = 'tei_xml'
+                  AND a.sha256 = md.metadata->>'source_sha256'
+                ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+            ) xml ON TRUE
             WHERE md.sha256 IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM mention_detection_runs dr
-                  WHERE dr.publication_id = p.id
-                    AND dr.markdown_artifact_id = md.id
-                    AND dr.render_sha256 = md.sha256
-                    AND dr.detector_version = %s
-                    AND dr.status = 'successful'
-              )
-        """
-        params: list[Any] = [detector_version]
+              {pending_filter}
+        """.format(profile_filter=profile_filter, version_filter=version_filter, pending_filter=pending_filter)
+        params: list[Any] = [value for value in (render_profile, renderer_version) if value]
+        if not include_cached:
+            params.append(detector_version)
         query, params = scope_to_preview_candidates(query, params, pipeline_run_id)
         query += " ORDER BY p.id"
         if limit is not None:
@@ -123,6 +147,46 @@ class MentionRepositoryMixin:
             (error, detection_run_id),
         )
         self.conn.commit()
+
+    def get_mention_screening(
+        self, publication_id: int, artifact_id: int, render_sha256: str, version: str,
+    ) -> dict[str, Any] | None:
+        self.cursor.execute(
+            """
+            SELECT metrics FROM mention_detection_runs
+            WHERE publication_id = %s AND markdown_artifact_id = %s AND render_sha256 = %s
+              AND detector_version = %s AND status = 'successful'
+            """,
+            (publication_id, artifact_id, render_sha256, version),
+        )
+        row = self.cursor.fetchone()
+        return dict(row["metrics"]) if row else None
+
+    def record_mention_screening(
+        self, publication_id: int, artifact_id: int, render_sha256: str, version: str,
+        metrics: dict[str, Any], error: str | None = None,
+    ) -> dict[str, Any]:
+        self.cursor.execute(
+            """
+            INSERT INTO mention_detection_runs AS dr (
+                publication_id, markdown_artifact_id, render_sha256, detector_version,
+                status, candidate_count, metrics, error, completed_at
+            )
+            VALUES (%s, %s, %s, %s, %s, 0, %s, %s, now())
+            ON CONFLICT (publication_id, markdown_artifact_id, render_sha256, detector_version)
+            DO UPDATE SET status = EXCLUDED.status, metrics = EXCLUDED.metrics,
+                          error = EXCLUDED.error, completed_at = EXCLUDED.completed_at
+            WHERE dr.status <> 'successful'
+            RETURNING metrics
+            """,
+            (publication_id, artifact_id, render_sha256, version,
+             "failed" if error is not None else "successful", psycopg2.extras.Json(metrics), error),
+        )
+        row = self.cursor.fetchone()
+        self.conn.commit()
+        if row:
+            return dict(row["metrics"])
+        return self.get_mention_screening(publication_id, artifact_id, render_sha256, version) or metrics
 
     def upsert_mention_candidates(
         self,

@@ -132,7 +132,7 @@ def test_enqueue_failure_marks_the_run_failed(monkeypatch):
         orchestrator,
         "validate_discovery_preview",
         lambda preview_id, processing_limit: {
-            "request": {"strategy_version": 2, "processing_limit": 5, "mode": "catalog_funnel"}
+            "request": {"strategy_version": 3, "processing_limit": 5, "mode": "catalog_funnel"}
         },
     )
 

@@ -6,7 +6,7 @@ from typing import Any
 
 import psycopg2.extras
 
-from datasight.domain.candidate_detection import DETECTOR_VERSION
+from datasight.domain.candidate_detection import DETECTOR_VERSION, SCREENING_VERSION
 from datasight.domain.extraction import PublicationExtraction, referenced_evidence_ids
 
 
@@ -29,23 +29,31 @@ class ExtractionRepositoryMixin:
                 ORDER BY created_at DESC,id DESC LIMIT 1
             ) xml ON TRUE
             JOIN LATERAL (
-                SELECT a.* FROM artifacts a
+                SELECT a.*, screening.decision FROM artifacts a
+                JOIN LATERAL (
+                    SELECT dr.metrics->>'decision' AS decision FROM mention_detection_runs dr
+                    WHERE dr.publication_id=p.id AND dr.markdown_artifact_id=a.id
+                        AND dr.render_sha256=a.sha256 AND dr.status='successful'
+                        AND dr.detector_version IN (COALESCE(pr.config->>'detector_version', %s), %s)
+                    ORDER BY (dr.detector_version = COALESCE(pr.config->>'detector_version', %s)) DESC
+                    LIMIT 1
+                ) screening ON TRUE
                 WHERE a.publication_id=p.id AND a.artifact_type='markdown'
-                    AND (%s::text IS NULL OR (a.metadata->>'profile'=%s AND a.metadata->>'producer_version'=%s))
-                    AND EXISTS (
-                        SELECT 1 FROM mention_detection_runs dr
-                        WHERE dr.publication_id=p.id AND dr.markdown_artifact_id=a.id
-                            AND dr.render_sha256=a.sha256 AND dr.status='successful'
-                            AND dr.detector_version=COALESCE(pr.config->>'detector_version', %s)
-                    )
+                    AND (COALESCE(%s::text, pr.config->>'render_profile') IS NULL
+                         OR a.metadata->>'profile'=COALESCE(%s::text, pr.config->>'render_profile'))
+                    AND (COALESCE(%s::text, pr.config->>'renderer_version') IS NULL
+                         OR a.metadata->>'producer_version'=COALESCE(%s::text, pr.config->>'renderer_version'))
                 ORDER BY a.created_at DESC,a.id DESC LIMIT 1
             ) md ON TRUE
-            WHERE EXISTS (
+            WHERE md.decision IS DISTINCT FROM 'no_use' AND EXISTS (
                 SELECT 1 FROM discovery_candidates dc
                 WHERE dc.pipeline_run_id=pr.id AND dc.publication_id=p.id AND dc.included AND dc.pipeline_ready
             )
         """
-        params: list[Any] = [run_id, render_profile, render_profile, renderer_version, DETECTOR_VERSION]
+        params: list[Any] = [
+            run_id, DETECTOR_VERSION, SCREENING_VERSION, DETECTOR_VERSION,
+            render_profile, render_profile, renderer_version, renderer_version,
+        ]
         if publication_id is not None:
             query += " AND p.id=%s"
             params.append(publication_id)
@@ -317,5 +325,7 @@ class ExtractionRepositoryMixin:
             ) e WHERE pi.id=pis.pipeline_item_id AND pi.pipeline_run_id=%s AND pis.stage='extract_features'
         """, (run_id,))
         self.cursor.execute("""UPDATE pipeline_items pi SET status=pis.status,updated_at=now()
-            FROM pipeline_item_stages pis WHERE pis.pipeline_item_id=pi.id AND pis.stage='extract_features' AND pi.pipeline_run_id=%s""", (run_id,))
+            FROM pipeline_item_stages pis WHERE pis.pipeline_item_id=pi.id AND pis.stage='extract_features'
+              AND pi.pipeline_run_id=%s
+              AND NOT (pis.status='skipped' AND pis.metrics->>'decision' IS NOT DISTINCT FROM 'no_use')""", (run_id,))
         self.conn.commit()

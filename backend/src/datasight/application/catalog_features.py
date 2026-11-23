@@ -118,7 +118,7 @@ def citation_facts(field: CatalogField, literal: str, source: Evidence) -> Itera
 
 
 def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, Any]],
-                         evidence: dict[str, Evidence]) -> None:
+                         evidence: dict[str, Evidence], *, recover_fields: bool = False) -> None:
     for (name, _, ids, facts), group in zip(response.g, groups, strict=True):
         by_line = dict(zip(dict.fromkeys(ids), group["evidence_ids"], strict=True))
         if name and group["name"] and ACCESSION.fullmatch(name):
@@ -130,6 +130,9 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
         grounded = []
         for field, line, literal in facts:
             if line not in by_line:
+                if recover_fields:
+                    rejected.add(field)
+                    continue
                 raise InvalidCompletion("Invalid completion: catalog fact cites a line outside its dataset")
             eid = by_line[line]
             grounded.extend((key, value, eid) for key, value in citation_facts(field, literal, evidence[eid]))
@@ -138,7 +141,8 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
                 continue
             if field.startswith("role_"):
                 source = evidence[eid]
-                if source.placement == "bibliography" or not literal.strip() or literal not in source.quote:
+                if (source.placement == "bibliography" or not literal.strip() or literal not in source.quote
+                        or (recover_fields and field != "role_discussed" and prior_work_clause(source.quote, literal))):
                     rejected.add(field)
                 else:
                     ids_for_role = roles.setdefault(field.removeprefix("role_"), [])
@@ -162,3 +166,26 @@ def attach_catalog_facts(response: CatalogChunkResponse, groups: list[dict[str, 
         group["roles"] = roles
         group["identity"] = IdentityFeatures.model_validate(observations).model_dump(mode="json", exclude_unset=True)
         group["review_reasons"] = [f"Review dataset {field} evidence" for field in sorted(rejected)]
+
+
+PRIOR_WORK = re.compile(
+    r"\b(?:a|another|one|the previous|a prior|an earlier|a previous|a cited) study\b|"
+    r"\b(?:prior|previous|earlier) (?:studies|work)\b|\bet al\.\s+(?:used|analy[sz]ed|reported|found)\b", re.I,
+)
+CURRENT_USE = re.compile(
+    r"\b(?:we|this (?:study|paper|work)|our (?:study|analysis))\b"
+    r"[^.;:]*?\b(?:used|analy[sz]ed|re-analy[sz]ed|collected|evaluated|trained|tested|validated|applied)\b", re.I,
+)
+
+
+def prior_work_clause(quote: str, literal: str) -> bool:
+    """Catch explicit attribution to another study in the cited sentence."""
+    for match in re.finditer(re.escape(literal), quote):
+        preceding = re.split(r"[.!?]\s+(?=[A-Z])", quote[:match.start()])[-1]
+        following = re.split(r"[.!?]\s+(?=[A-Z])", quote[match.end():], maxsplit=1)[0]
+        sentence = preceding + literal + following
+        prior = PRIOR_WORK.search(sentence)
+        current = CURRENT_USE.search(sentence)
+        if prior and (not current or (prior.start() < current.start() and current.end() > len(preceding + literal))):
+            return True
+    return False

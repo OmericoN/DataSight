@@ -11,6 +11,7 @@ from datasight import config
 from datasight.application.extraction_engine import consolidate
 from datasight.application.catalog_features import CATALOG_PROMPT, ROLE_PROMPT, CatalogChunkResponse, CatalogUseChunkResponse, attach_catalog_facts, has_deposit_marker
 from datasight.application.catalog_candidate_resolution import refine_candidates
+from datasight.application.catalog_identity import has_explicit_deposit_citation, reconcile_catalog_identity
 from datasight.application.whole_document_extraction import (
     CandidateGroup,
     LOCATE_GROUPS,
@@ -25,12 +26,24 @@ from datasight.infrastructure.llm.client import (
     OutputTruncated, RequestTooLarge, payload_for, prompt_character_count,
 )
 
-PROMPT_VERSION = "catalog-v4"
+PROMPT_VERSION = "catalog-v5"
+CATALOG_V4 = "catalog-v4"
 PREVIOUS_CATALOG_V4 = "fast-catalog-v4"
 CATALOG_V3 = "fast-catalog-v3"
 CANDIDATE_PROMPT_VERSION = "fast-candidates-v2"
 LEGACY_PROMPT_VERSION = "fast-candidates-v1"
-CATALOG_PROMPT_VERSIONS = (PROMPT_VERSION, PREVIOUS_CATALOG_V4, CATALOG_V3, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION)
+CATALOG_PROMPT_VERSIONS = (
+    PROMPT_VERSION, CATALOG_V4, PREVIOUS_CATALOG_V4, CATALOG_V3, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION,
+)
+CATALOG_TARGET_CHARS = 16_000
+CATALOG_SPLIT_DEPTH = 3
+MATCHING_PROMPT = ROLE_PROMPT + """
+Keep group evidence concise. Use the strongest lines that identify the dataset or establish use,
+and avoid repeated summaries, numeric result rows and background mentions. Give repository
+collection links and explicit data citations priority. A phrase describing multiple datasets is
+not an alias. Pair each link and citation with its own dataset. Leave a fact out if the line does
+not establish the association. A cited study's use never establishes use by this publication.
+"""
 LOCATE_CHUNK = LOCATE_GROUPS.replace("entire publication", "entire supplied source segment")
 LOCATE_COMPACT = LOCATE_CHUNK.replace("Set complete", "Set c").replace("set complete", "set c") + """
 Return c for scan completion and g for groups. Each group is [name or null,
@@ -61,7 +74,8 @@ class CompactChunkResponse(StrictModel):
 
 
 FORMATS = {
-    PROMPT_VERSION: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
+    PROMPT_VERSION: (CatalogUseChunkResponse, MATCHING_PROMPT, ":catalog-use-v5"),
+    CATALOG_V4: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
     PREVIOUS_CATALOG_V4: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
     CATALOG_V3: (CatalogChunkResponse, CATALOG_PROMPT, ":catalog"),
     CANDIDATE_PROMPT_VERSION: (CompactChunkResponse, LOCATE_COMPACT, ":compact"),
@@ -79,7 +93,7 @@ class Chunk:
 
     @property
     def key(self) -> str:
-        prefix = "catalog" if self.prompt_version == PROMPT_VERSION else "fast"
+        prefix = "catalog" if self.prompt_version in {PROMPT_VERSION, CATALOG_V4} else "fast"
         return f"{prefix}:{self.start}:{self.end}" + FORMATS[self.prompt_version][2]
 
 
@@ -88,8 +102,11 @@ def make_chunk(text: str, start: int, end: int, max_prompt_chars: int, *, prompt
     model, instruction, _ = FORMATS[prompt_version]
     data: dict[str, Any] = {"lines": list(enumerate(lines, 1))}
     if issubclass(model, CatalogChunkResponse):
-        deposits = [i for i, line in data["lines"] if line.startswith("- **[")
-                    and ("DOI:" in line or "URL:" in line) and has_deposit_marker(line)]
+        deposits = [
+            i for i, line in data["lines"] if line.startswith("- **[")
+            and ("DOI:" in line or "URL:" in line)
+            and (has_deposit_marker(line) or (prompt_version == PROMPT_VERSION and has_explicit_deposit_citation(line)))
+        ]
         if deposits:
             data["possible_data_deposit_lines"] = deposits
             instruction += "\nCheck each possible_data_deposit_lines entry. Extract confirmed data citations with DOI/URL, title, creators and release year. Skip software and articles."
@@ -112,24 +129,24 @@ def preferred_end(text: str, start: int, end: int) -> int:
 
 
 def plan_chunks(text: str, start: int, stop: int, max_prompt_chars: int, *, prompt_version: str = LEGACY_PROMPT_VERSION) -> list[Chunk]:
-    if stop - start <= max_prompt_chars:
-        try:
-            return [make_chunk(text, start, stop, max_prompt_chars, prompt_version=prompt_version)]
-        except RequestTooLarge:
-            pass
-
+    target = min(max_prompt_chars, CATALOG_TARGET_CHARS) if prompt_version == PROMPT_VERSION else max_prompt_chars
+    if start == stop:
+        return [make_chunk(text, start, stop, max_prompt_chars, prompt_version=prompt_version)]
     chunks = []
     while start < stop:
-        low, high = start + 1, min(stop, start + max_prompt_chars)
-        best = None
-        while low <= high:
-            end = (low + high + 1) // 2
-            try:
-                best = make_chunk(text, start, end, max_prompt_chars, prompt_version=prompt_version)
-            except RequestTooLarge:
-                high = end - 1
-            else:
-                low = end + 1
+        low, high = start + 1, min(stop, start + target)
+        try:
+            best = make_chunk(text, start, high, max_prompt_chars, prompt_version=prompt_version)
+        except RequestTooLarge:
+            best = None
+            while low <= high:
+                end = (low + high + 1) // 2
+                try:
+                    best = make_chunk(text, start, end, max_prompt_chars, prompt_version=prompt_version)
+                except RequestTooLarge:
+                    high = end - 1
+                else:
+                    low = end + 1
         if best is None:
             raise RequestTooLarge("Catalog extraction prompt cannot fit even a single source character")
         if best.end < stop:
@@ -160,7 +177,10 @@ def ground_chunk(text: str, chunk: Chunk, response: WholeDocumentResponse | Comp
     if failures:
         raise InvalidCompletion(f"Invalid completion: {failures} invalid source references")
     if isinstance(response, CatalogChunkResponse):
-        attach_catalog_facts(response, groups, {item.evidence_id: item for item in evidence})
+        attach_catalog_facts(
+            response, groups, {item.evidence_id: item for item in evidence},
+            recover_fields=chunk.prompt_version == PROMPT_VERSION,
+        )
     return {"groups": groups, "evidence": [item.model_dump(mode="json") for item in evidence]}
 
 
@@ -177,9 +197,12 @@ def scan_chunk(
         max_prompt_chars = min(max_prompt_chars, saved_limit)
     if prompt_character_count(chunk.payload["messages"]) > max_prompt_chars:
         raise RequestTooLarge("Prompt exceeds the gateway character limit", max_prompt_chars=max_prompt_chars)
-    if checkpoint and checkpoint.get("error") == INCOMPLETE_SCAN and split_depth < 2:
+    current = chunk.prompt_version == PROMPT_VERSION
+    if current and saved_failure.get("reason") in {"output_truncated", "invalid_scan"} and split_depth < CATALOG_SPLIT_DEPTH:
+        raise SavedSplitRequired(checkpoint.get("error") or "Saved incomplete scan")
+    if not current and checkpoint and checkpoint.get("error") == INCOMPLETE_SCAN and split_depth < 2:
         raise SavedSplitRequired(INCOMPLETE_SCAN)
-    if saved_failure.get("reason") == "output_truncated":
+    if not current and saved_failure.get("reason") == "output_truncated":
         if split_depth < 2:
             raise SavedSplitRequired("Saved output truncation")
         if chunk.prompt_version != LEGACY_PROMPT_VERSION:
@@ -191,9 +214,18 @@ def scan_chunk(
         if checkpoint and (checkpoint["result"] or {}).get("reason") == "output_truncated":
             raise OutputTruncated("Compact completion reached its output limit")
 
-    if checkpoint and (checkpoint.get("error") or "").endswith((" invalid source references", " invalid source references or names")):
-        attempts = checkpoint.get("attempts") or []
-        response = saved_completion(attempts[-1], "stop", FORMATS[chunk.prompt_version][0]) if attempts else None
+    attempts = (checkpoint or {}).get("attempts") or []
+    last = attempts[-1] if attempts else {}
+    # A worker can exit after committing the HTTP response but before committing its grounded result.
+    interrupted_after_response = (
+        checkpoint and checkpoint.get("status") == "running" and checkpoint.get("request") == chunk.payload
+        and last.get("http_status") == 200 and last.get("error") is None
+        and (last.get("response") or {}).get("model") == chunk.payload["model"]
+    )
+    if interrupted_after_response or (checkpoint and (checkpoint.get("error") or "").endswith(
+        (" invalid source references", " invalid source references or names")
+    )):
+        response = saved_completion(last, "stop", FORMATS[chunk.prompt_version][0]) if last else None
         if response is not None:
             try:
                 result = ground_chunk(text, chunk, response)
@@ -215,6 +247,8 @@ def scan_chunk(
         result = None
         if isinstance(exc, OutputTruncated):
             result = {"reason": "output_truncated"}
+        elif current and isinstance(exc, InvalidCompletion):
+            result = {"reason": "invalid_scan"}
         elif isinstance(exc, RequestTooLarge) and exc.max_prompt_chars is not None:
             result = {"max_prompt_chars": exc.max_prompt_chars}
         repo.finish_extraction_request(extraction_id, chunk.key, result, str(exc))
@@ -264,21 +298,33 @@ def run_catalog_extraction(
                 continue
             max_prompt_chars = min(max_prompt_chars, limit)
             try:
-                replacements = plan_chunks(text, chunk.start, chunk.end, max_prompt_chars, prompt_version=chunk.prompt_version)
+                replacements = plan_chunks(text, chunk.start, chunk.end, limit, prompt_version=chunk.prompt_version)
             except RequestTooLarge:
                 errors.append(f"characters {chunk.start}–{chunk.end}: gateway limit of {max_prompt_chars} characters is too small")
                 continue
             pending.extendleft((part, split_depth) for part in reversed(replacements))
             planned_chunks += len(replacements) - 1
             call_limit += len(replacements) - int(attempts == attempts_before)
-        except (OutputTruncated, IncompleteScan) as exc:
-            if (split_depth == 0 or isinstance(exc, SavedSplitRequired)) and chunk.end - chunk.start > 1:
+        except (OutputTruncated, InvalidCompletion) as exc:
+            if prompt_version == PROMPT_VERSION:
+                can_split = split_depth < CATALOG_SPLIT_DEPTH
+            else:
+                can_split = isinstance(exc, (OutputTruncated, IncompleteScan)) and (
+                    split_depth == 0 or isinstance(exc, SavedSplitRequired)
+                )
+            if can_split and chunk.end - chunk.start > 1:
                 midpoint = preferred_end(text, chunk.start, (chunk.start + chunk.end) // 2)
-                left = make_chunk(text, chunk.start, midpoint, max_prompt_chars, prompt_version=chunk.prompt_version)
-                right = make_chunk(text, midpoint, chunk.end, max_prompt_chars, prompt_version=chunk.prompt_version)
-                pending.extendleft(((right, split_depth + 1), (left, split_depth + 1)))
-                planned_chunks += 1
-                call_limit += 2 - int(attempts == attempts_before)
+                try:
+                    children = [
+                        child for start, end in ((chunk.start, midpoint), (midpoint, chunk.end))
+                        for child in plan_chunks(text, start, end, max_prompt_chars, prompt_version=chunk.prompt_version)
+                    ]
+                except RequestTooLarge as size_error:
+                    errors.append(f"characters {chunk.start}–{chunk.end}: {size_error}")
+                    continue
+                pending.extendleft((child, split_depth + 1) for child in reversed(children))
+                planned_chunks += len(children) - 1
+                call_limit += len(children) - int(attempts == attempts_before)
             else:
                 errors.append(f"characters {chunk.start}–{chunk.end}: {exc}")
         except InferenceUnavailable:
@@ -298,6 +344,8 @@ def run_catalog_extraction(
         raise ValueError(f"Catalog extraction incomplete. {len(errors)} of {planned_chunks} chunks failed. {errors[0]}")
     if covered != len(text):
         raise ValueError("Catalog extraction incomplete. Source coverage has a gap.")
+    if prompt_version == PROMPT_VERSION:
+        reconcile_catalog_identity(text, groups, evidence)
     blocked = refine_candidates(text, groups, evidence) if compact else set()
     result = publication_result({
         "status": "complete", "paper_id": paper_id, "source_sha256": source_sha256,

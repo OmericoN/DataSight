@@ -19,7 +19,7 @@ STAGE_QUEUES: dict[PipelineStage, str] = {
     PipelineStage.DOWNLOAD_PDF: "download",
     PipelineStage.GROBID_CONVERT: "grobid",
     PipelineStage.RENDER_DOCUMENT: "processing",
-    PipelineStage.DETECT_MENTIONS: "processing",
+    PipelineStage.DETECT_MENTIONS: "llm",
     PipelineStage.EXTRACT_FEATURES: "llm",
 }
 
@@ -96,7 +96,7 @@ def build_dispatch_plan(
         queued = queued_counts.get(stage.value, 0)
         if queued <= 0:
             continue
-        stage_batch_size = 1 if stage == PipelineStage.EXTRACT_FEATURES else safe_batch_size
+        stage_batch_size = 1 if STAGE_QUEUES[stage] == "llm" else safe_batch_size
         batch_count = min(safe_max_batches, ceil(queued / stage_batch_size))
         batches.extend(
             StageBatch(
@@ -119,7 +119,7 @@ def process_high_throughput_stage(
         item_ids = repo.claim_queued_item_stages(
             pipeline_run_id=pipeline_run_id,
             stage=stage_value,
-            limit=1 if stage_value == PipelineStage.EXTRACT_FEATURES else max(1, batch_size),
+            limit=1 if STAGE_QUEUES[stage_value] == "llm" else max(1, batch_size),
             task_id=task_id,
         )
 

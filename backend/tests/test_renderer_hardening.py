@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from datasight.infrastructure.ingestion import renderer
 from datasight.infrastructure.ingestion.renderer import extract_markdown, render_papers, render_to_markdown
 
 
@@ -57,7 +58,7 @@ def test_full_body_traverses_top_level_content_tables_lists_and_sections(tmp_pat
     assert "Appendix" in markdown
 
 
-def test_default_pruned_profile_prunes_low_yield_sections(tmp_path: Path):
+def test_default_pruned_profile_keeps_scientific_sections(tmp_path: Path):
     xml = tmp_path / "paper.tei.xml"
     xml.write_text(_tei(), encoding="utf-8")
     markdown = extract_markdown(xml)
@@ -67,10 +68,65 @@ def test_default_pruned_profile_prunes_low_yield_sections(tmp_path: Path):
     assert "GSE999" not in markdown
     assert "Literature Review" not in markdown
     assert "GSE888" not in markdown
-    assert "Discussion" not in markdown
-    assert "Conclusion" not in markdown
-    assert "Supplementary Material" not in markdown
-    assert "Appendix biobank" not in markdown
+    assert "Discussion" in markdown
+    assert "Conclusion" in markdown
+    assert "Supplementary Material" in markdown
+    assert "Appendix biobank" in markdown
+
+
+def test_pruned_retains_dataset_back_matter_references_and_split_links(tmp_path: Path):
+    xml = tmp_path / "dataset.tei.xml"
+    xml.write_text("""<TEI xmlns="http://www.tei-c.org/ns/1.0"><text>
+      <body><p>We evaluated both cohorts.</p></body>
+      <back>
+        <div type="availability"><div><head>Data availability</head><p>Both collections are available
+        [https:// wiki. exam ple. org/ collec tion/ Alpha-Data, https:// exam ple. org/ archive/ Beta+ Cohort].
+        The URL note [https://example.org/archive when available] is unchanged.</p></div></div>
+        <div type="annex"><div><head>Datasets</head><p>We used the Alpha cohort for validation
+        <ref type="bibr" target="#deposit">[2]</ref>. The Beta cohort was obtained from
+        <ref target="https:// example.org/records/ 1234">the repository</ref>.</p></div></div>
+        <div><head>Declarations</head><div><head>Competing interests</head><p>None declared.</p></div>
+        <div><head>Materials availability</head><p>A separate subset is available.</p></div></div>
+        <note place="foot" xml:id="n1">Subset accession GSE123456.</note>
+        <listBibl>
+          <biblStruct xml:id="deposit"><monogr><title>Data From Alpha</title>
+          <idno type="DOI">10.5281/zenodo. 1234</idno>
+          <ptr target="https://doi.org/10.5281/zenodo"/><ptr target="https://example.org/alpha"/>
+          <ptr target="https://example.org/alpha/download"/></monogr></biblStruct>
+          <bibl xml:id="uncited">Beta cohort archive, release 2.</bibl>
+        </listBibl>
+      </back>
+    </text></TEI>""", encoding="utf-8")
+    text = extract_markdown(xml)
+
+    assert "Data availability" in text
+    assert "[https://wiki.example.org/collection/Alpha-Data, https://example.org/archive/Beta+Cohort]" in text
+    assert "[https://example.org/archive when available]" in text
+    assert "https://example.org/records/1234" in text
+    assert "Alpha cohort for validation [2]{#deposit}" in " ".join(text.split())
+    assert "None declared" not in text
+    assert "A separate subset is available." in text
+    assert "Subset accession GSE123456." in text
+    assert "{#deposit}" in text and "DOI: https://doi.org/10.5281/zenodo.1234" in text
+    assert "URL: https://doi.org/10.5281/zenodo" not in text
+    assert "URL: https://example.org/alpha URL: https://example.org/alpha/download" in text
+    assert "{#uncited} Beta cohort archive, release 2." in text
+
+
+def test_renderer_versions_and_profiles_keep_distinct_default_artifacts(tmp_path: Path, monkeypatch):
+    xml = tmp_path / "paper.tei.xml"
+    xml.write_text(_tei(), encoding="utf-8")
+    monkeypatch.setattr(renderer, "MARKDOWN_DIR", tmp_path / "renders")
+    legacy = render_to_markdown(xml, version=renderer.LEGACY_RENDERER_VERSION)
+    current = render_to_markdown(xml)
+    full_body, = render_papers([{"paperId": current.paper_id, "xml_path": str(xml)}], profile="full_body")
+
+    assert legacy.success and current.success and full_body.success
+    assert len({legacy.md_path, current.md_path, full_body.md_path}) == 3
+    assert legacy.md_path.read_bytes() == extract_markdown(xml, version=renderer.LEGACY_RENDERER_VERSION).encode()
+    assert "Appendix biobank" not in legacy.md_path.read_text(encoding="utf-8")
+    assert "Appendix biobank" in current.md_path.read_text(encoding="utf-8")
+    assert current.producer_version == renderer.RENDERER_VERSION
 
 
 def test_render_records_lineage_metrics_and_reuses_only_matching_cache(tmp_path: Path):

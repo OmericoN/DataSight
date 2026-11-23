@@ -9,7 +9,7 @@ from benchmarks.vllm import replay
 from datasight import config
 from datasight.application import llm_extraction
 from datasight.application.catalog_extraction import (
-    CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION, PREVIOUS_CATALOG_V4, PROMPT_VERSION,
+    CANDIDATE_PROMPT_VERSION, CATALOG_V4, LEGACY_PROMPT_VERSION, PREVIOUS_CATALOG_V4, PROMPT_VERSION,
     make_chunk, run_catalog_extraction, scan_chunk,
 )
 from datasight.application.whole_document_extraction import WholeDocumentResponse, extract_whole_document
@@ -248,7 +248,7 @@ def test_catalog_rename_preserves_saved_version_and_checkpoint(monkeypatch):
 
     source = "Alpha dataset."
     old_chunk = make_chunk(source, 0, len(source), MAX_PROMPT_CHARS, prompt_version=PREVIOUS_CATALOG_V4)
-    new_chunk = make_chunk(source, 0, len(source), MAX_PROMPT_CHARS, prompt_version=PROMPT_VERSION)
+    new_chunk = make_chunk(source, 0, len(source), MAX_PROMPT_CHARS, prompt_version=CATALOG_V4)
     assert old_chunk.key == f"fast:0:{len(source)}:catalog-use"
     assert new_chunk.key == f"catalog:0:{len(source)}:catalog-use"
     assert old_chunk.payload == new_chunk.payload
@@ -260,7 +260,7 @@ def test_catalog_run_uses_selected_render_and_continues_if_a_detected_file_disap
     monkeypatch.delenv("LLM_EXTRACTION_STRATEGY", raising=False)
     monkeypatch.setattr(config, "EXTRACTIONS_DIR", tmp_path / "extractions")
     settings = llm_extraction.extraction_configuration(render_profile=profile)
-    assert settings["prompt_version"] == "catalog-v4"
+    assert settings["prompt_version"] == "catalog-v5"
     assert llm_extraction.catalog_configuration(profile, LEGACY_PROMPT_VERSION) in llm_extraction.supported_extraction_configurations()
     assert llm_extraction.extraction_configuration()["render_profile"] == "pruned"
     text = "We used the Alpha cohort.\r\nData were archived."
@@ -351,6 +351,18 @@ def test_catalog_catalog_fields_grounded_per_dataset_and_resumable(gateway):
     assert quotes[identity.identifiers.values[0].evidence_ids[0]].startswith("Alpine version 2")
 
 
+def test_catalog_rejects_an_explicit_article_doi_on_the_same_line_as_the_dataset_doi(gateway):
+    client, post = gateway
+    text = "We used Alpha. Paper DOI: https://doi.org/10.5555/article. Dataset DOI: 10.5555/alpha."
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1], [["doi", 1, "10.5555/article"], ["landing_page", 1, "https://doi.org/10.5555/article"],
+                               ["doi", 1, "10.5555/alpha"]]],
+    ]}))
+    data, = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash").datasets
+    assert [item.value.literal for item in data.identity.identifiers.values] == ["10.5555/alpha"]
+    assert data.identity.urls.state == "not_reported"
+
+
 def test_catalog_roles_require_body_evidence_and_supported_text(gateway):
     client, post = gateway
     text = "We used Alpha.\n# References\n- **[1]** Beta [dataset]."
@@ -367,7 +379,221 @@ def test_catalog_catalog_rejects_fact_citing_another_group(gateway):
     client, post = gateway
     post.return_value = completion('{"c":true,"g":[["Alpha",false,[1],[["repository",2,"Dryad"]]],["Beta",false,[2],[]]]}')
     with pytest.raises(ValueError, match="outside its dataset"):
-        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\nBeta on Dryad", "W1", "hash")
+        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\nBeta on Dryad", "W1", "hash", prompt_version=CATALOG_V4)
+
+
+def test_catalog_recovers_out_of_group_facts_without_losing_supported_identity(gateway):
+    client, post = gateway
+    text = "We used the Alpha cohort.\nAlpha was archived on Dryad.\nBeta on Zenodo."
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1, 2], [["role_used", 1, "We used the Alpha cohort"],
+                                     ["repository", 2, "Dryad"], ["repository", 3, "Zenodo"]]],
+        ["Beta", False, [3], [["repository", 3, "Zenodo"]]],
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+
+    alpha, beta = result.datasets
+    assert result.coverage["covered_characters"] == len(text)
+    assert [value.value for value in alpha.identity.repository.values] == ["Dryad"]
+    assert [value.value for value in beta.identity.repository.values] == ["Zenodo"]
+    assert alpha.review_reasons == ["Review dataset repository evidence"]
+    post.assert_called_once()
+
+
+def test_catalog_links_deposit_to_the_right_data_collection(gateway):
+    client, post = gateway
+    text = ("Lung3 and Radiogenomics are two public lung datasets.\n"
+            "## Data availability\n"
+            "The datasets analyzed in this work (Lung3 and Radiogenomics) are publicly available "
+            "from The Cancer Imaging Archive (TCIA) ["
+            "https://wiki.cancerimagingarchive.net/display/Public/NSCLC-Radiomics-Genomics, "
+            "https://wiki.cancerimagingarchive.net/display/Public/NSCLC+Radiogenomics].\n"
+            "## References\n"
+            "- **[Aerts, 2015]** {#b1} Aerts (2015). Data From NSCLC-Radiomics-Genomics. "
+            "DOI: https://doi.org/10.7937/K9/TCIA.2015.L4FRET6Z\n"
+            "- **[Bakr, 2018]** {#b2} Bakr (2018). A radiogenomic dataset of non-small cell lung cancer. "
+            "DOI: https://doi.org/10.1038/sdata.2018.202")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Lung3", False, [1], []],
+        ["Radiogenomics", False, [1, 3, 5, 6], [
+            ["aliases", 1, "two public lung datasets"],
+            ["aliases", 5, "Data From NSCLC-Radiomics-Genomics"],
+            ["landing_page", 3, "https://wiki.cancerimagingarchive.net/display/Public/NSCLC-Radiomics-Genomics"],
+            ["doi", 6, "https://doi.org/10.1038/sdata.2018.202"],
+        ]],
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    lung, radiogenomics = result.datasets
+    assert [v.value.literal for v in lung.identity.identifiers.values] == ["https://doi.org/10.7937/K9/TCIA.2015.L4FRET6Z"]
+    assert [v.value for v in lung.identity.creators.values] == ["Aerts"]
+    assert [v.value for v in lung.identity.year.values] == [2015]
+    assert lung.identity.urls.values[0].value.url.endswith("NSCLC-Radiomics-Genomics")
+    assert radiogenomics.identity.urls.values[0].value.url.endswith("NSCLC+Radiogenomics")
+    assert [v.value for v in radiogenomics.identity.aliases.values] == ["NSCLC+Radiogenomics"]
+    assert radiogenomics.identity.identifiers.state == "not_reported"
+    assert [v.value for v in radiogenomics.use.roles.values] == ["used"]
+    assert "Review dataset aliases evidence" in radiogenomics.review_reasons
+    by_id = {item.evidence_id: item for item in result.evidence}
+    doi_evidence = by_id[lung.identity.identifiers.values[0].evidence_ids[0]]
+    assert doi_evidence.placement == "bibliography"
+    assert text[doi_evidence.char_start:doi_evidence.char_end] == doi_evidence.quote and "{#b1}" in doi_evidence.quote
+    payload = json.loads(post.call_args.kwargs["json"]["messages"][1]["content"])
+    assert payload["possible_data_deposit_lines"] == [5]
+
+
+def test_exact_citation_title_keeps_only_its_own_zenodo_record(gateway):
+    client, post = gateway
+    url = "https://zenodo.org/records/8026660"
+    text = ("## References\n"
+            f"- **[1]** {{#b1}} Unknown (). CT Lung Lesion. URL: {url}\n"
+            f"- **[2]** {{#b2}} Vale (2022). Duke Liver [90] 310 MRI Liver. URL: {url}")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["CT Lung Lesion", False, [2], [["download", 2, url]]],
+        ["Duke Liver", False, [3], [["download", 3, url]]],
+    ]}))
+    lung, liver = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash").datasets
+    link, = lung.identity.urls.values
+    assert link.value.url == url and link.value.target == "landing_page"
+    assert all(o.bibliography_only for o in lung.occurrences)
+    assert lung.use.roles.state == "not_reported" and liver.identity.urls.state == "not_reported"
+    assert liver.review_reasons
+
+
+def test_same_title_with_two_zenodo_records_requires_review(gateway):
+    client, post = gateway
+    url = "https://zenodo.org/records/1"
+    text = ("## References\n"
+            f"- **[1]** {{#b1}} Unknown (). Atlas. URL: {url}\n"
+            "- **[2]** {#b2} Unknown (). Atlas. URL: https://zenodo.org/records/2")
+    post.return_value = completion(json.dumps({"c": True, "g": [["Atlas", False, [2], [["download", 2, url]]]]}))
+    dataset, = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash").datasets
+    assert dataset.identity.urls.state == "not_reported" and dataset.review_reasons
+
+
+def test_numbered_tcia_links_recover_wrapped_host_and_slug_with_original_evidence(gateway):
+    client, post = gateway
+    base = "https://wiki.cancerimagingarchive.net/display/Public/"
+    wrapped = base.replace("wiki.", "wiki. ")
+    line = (f"The following are available: dataset 1-{wrapped}NSCLC-Radiomics; "
+            f"dataset 6-{wrapped}NSCLC+ Radiogenomics# 123; dataset 7-{wrapped}Unknown-Imaging.")
+    text = "We analyzed NSCLC-Radiomics and NSCLC Radiogenomics alongside controls.\n" + line
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        [name, False, [1], []] for name in ("NSCLC-Radiomics", "NSCLC Radiogenomics", "controls")
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash")
+    alpha, beta, controls = result.datasets
+    for dataset, slug in ((alpha, "NSCLC-Radiomics"), (beta, "NSCLC+Radiogenomics")):
+        link, = dataset.identity.urls.values
+        assert link.value.url == base + slug
+        cite, = [e for e in result.evidence if e.evidence_id in link.evidence_ids]
+        assert cite.quote == line == text[cite.char_start:cite.char_end]
+    assert controls.identity.urls.state == "not_reported"
+
+
+def test_catalog_does_not_treat_prior_work_as_current_use(gateway):
+    client, post = gateway
+    text = ("A study comparing different methods used the Alpha cohort.\n"
+            "We analyzed Beta data collected in a previous study.")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1], [["role_used", 1, "used the Alpha cohort"]]],
+        ["Beta", False, [2], [["role_used", 2, "analyzed Beta data"]]],
+    ]}))
+    alpha, beta = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash").datasets
+    assert alpha.use.roles.state == "not_reported"
+    assert "Review dataset role_used evidence" in alpha.review_reasons
+    assert [item.value for item in beta.use.roles.values] == ["used"]
+
+
+def test_catalog_follows_single_dataset_citations_in_a_multi_dataset_paragraph(gateway):
+    client, post = gateway
+    text = ("We used two cohorts. The first is the Alpha dataset [1]{#deposit}. "
+            "The second is the Beta dataset [2]{#article}. Both Alpha and Beta were evaluated [3]{#shared}.\n"
+            "## References\n"
+            "- **[A, 2015]** {#deposit} A (2015). Data From Valley Imaging. DOI: https://doi.org/10.5555/valley\n"
+            "- **[B, 2018]** {#article} B (2018). A study of Beta. DOI: https://doi.org/10.5555/article\n"
+            "- **[C, 2020]** {#shared} C (2020). Data From Separate Collection. DOI: https://doi.org/10.5555/shared")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1], []],
+        ["Beta", False, [1], []],
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    alpha, beta = result.datasets
+    identifier, = alpha.identity.identifiers.values
+    assert identifier.value.literal == "https://doi.org/10.5555/valley"
+    by_id = {item.evidence_id: item.quote for item in result.evidence}
+    assert any("Alpha dataset [1]{#deposit}" in by_id[eid] for eid in identifier.evidence_ids)
+    assert any("Data From Valley Imaging" in by_id[eid] for eid in identifier.evidence_ids)
+    assert beta.identity.identifiers.state == "not_reported"
+
+
+def test_catalog_keeps_repository_articles_and_neighboring_deposits_off_the_wrong_dataset(gateway):
+    client, post = gateway
+    text = ("We compared Alpha [1]{#article} [2]{#deposit} to earlier work.\n"
+            "We also analyzed Valley Imaging.\n## References\n"
+            "- **[A]** {#article} Reed (2020). Assessing coverage in GEO. DOI: 10.5555/article\n"
+            "- **[B]** {#deposit} Vale (2021). Data From Valley Imaging. DOI: 10.5555/valley")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1, 4, 5], [["doi", 4, "10.5555/article"], ["doi", 5, "10.5555/valley"]]],
+        ["Valley Imaging", False, [2], []],
+    ]}))
+    alpha, valley = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash").datasets
+    assert alpha.identity.identifiers.state == "not_reported"
+    assert [item.value.literal for item in valley.identity.identifiers.values] == ["10.5555/valley"]
+
+
+def test_deposit_with_two_different_dois_keeps_byline_and_requires_identifier_review(gateway):
+    client, post = gateway
+    text = ("We analyzed Alpine [1]{#b1}.\n## References\n"
+            "- **[A]** {#b1} Vale (2021). Data From Alpine. "
+            "DOI: https://doi.org/10.5555/a DOI: https://doi.org/10.5555/b")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpine", False, [1, 3], [["doi", 3, "10.5555/a"]]],
+    ]}))
+    dataset, = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash").datasets
+    assert dataset.identity.identifiers.state == "not_reported"
+    assert [item.value for item in dataset.identity.creators.values] == ["Vale"]
+    assert "Review dataset identifiers evidence" in dataset.review_reasons
+
+
+def test_catalog_merges_an_explicitly_declared_short_dataset_name(gateway):
+    client, post = gateway
+    text = ("The Logs were validated.\n"
+            "We used the North Valley Logs dataset, which we will refer to as the Logs dataset.\n"
+            "We observed the South Valley Logs.")
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Logs", False, [1], []],
+        ["North Valley Logs", False, [2], [["aliases", 2, "Logs dataset"]]],
+        ["South Valley Logs", False, [3], []],
+    ]}))
+    merged, separate = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash").datasets
+    assert merged.display_name == "Logs"
+    assert "North Valley Logs" in {item.value for item in merged.identity.aliases.values}
+    assert len(merged.occurrences) == 2
+    assert separate.display_name == "South Valley Logs"
+
+
+def test_catalog_further_splits_failed_halves_and_reuses_successful_children(gateway):
+    client, post = gateway
+    text = "Alpha cohort.\n\nBeta samples.\n\nGamma corpus.\n\nDelta records."
+    success = completion('{"c":true,"g":[]}')
+    post.side_effect = [
+        completion("", "length"), completion('{"c":false,"g":[]}'),
+        success, success, success,
+    ]
+    repo = checkpoint_repo()
+    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash")
+    assert result.coverage == {"source_characters": len(text), "covered_characters": len(text), "validated_blocks": 3}
+    assert post.call_count == 5
+    assert run_catalog_extraction(repo, client, 11, text, "W1", "hash") == result
+    assert post.call_count == 5
+
+
+def test_catalog_reports_a_terminal_failure_at_the_split_limit(gateway):
+    client, post = gateway
+    post.return_value = completion("", "length")
+    with pytest.raises(ValueError, match="8 of 8 chunks failed"):
+        run_catalog_extraction(checkpoint_repo(), client, 11, "Alpha data paragraph.\n\n" * 80, "W1", "hash")
+    assert post.call_count == 15
 
 
 def test_catalog_catalog_distinguishes_deposit_and_article_byline(gateway):
@@ -438,13 +664,13 @@ def test_catalog_truncation_splits_once_and_resume_reuses_checkpoints(gateway, f
     text = "Alpha data.\n\nBeta samples."
 
     with pytest.raises(ValueError, match="1 of 2 chunks failed"):
-        run_catalog_extraction(repo, client, 11, text, "W1", "hash")
+        run_catalog_extraction(repo, client, 11, text, "W1", "hash", prompt_version=CATALOG_V4)
 
     assert post.call_count == 3
     assert repo.record_extraction_progress.call_args.args[1]["completed_chunks"] == 1
     post.side_effect = None
     post.return_value = success
-    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash")
+    result = run_catalog_extraction(repo, client, 11, text, "W1", "hash", prompt_version=CATALOG_V4)
 
     expected_blocks = 3 if finish == "length" or not json.loads(content)["c"] else 2
     assert post.call_count == 3 + expected_blocks - 1
@@ -492,7 +718,22 @@ def test_catalog_rejects_unsupported_line_evidence(gateway, ids, facts, error):
     client, post = gateway
     post.return_value = completion(json.dumps({"c": True, "g": [["Alpha", False, ids, facts]]}))
     with pytest.raises(ValueError, match=error):
-        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\n\nDryad", "W1", "hash")
+        run_catalog_extraction(checkpoint_repo(), client, 1, "Alpha\n\nDryad", "W1", "hash", prompt_version=CATALOG_V4)
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_interrupted_catalog_regrounds_a_saved_http_response(gateway, valid):
+    client, post = gateway
+    text = "Alpha cohort."
+    chunk = make_chunk(text, 0, len(text), MAX_PROMPT_CHARS, prompt_version=PROMPT_VERSION)
+    answer = completion('{"c":true,"g":[["Alpha",false,[1],[]]]}')
+    saved = answer if valid else completion('{"c":true,"g":[["Alpha",false,[9],[]]]}')
+    repo = checkpoint_repo({chunk.key: {"status": "running", "request": chunk.payload,
+        "attempts": [{"response": saved.json(), "http_status": 200, "error": None}]}})
+    post.return_value = answer
+    result = scan_chunk(repo, client, 1, text, chunk, 0, MAX_PROMPT_CHARS, MagicMock())
+    assert post.call_count == (0 if valid else 1)
+    assert result["evidence"][0]["quote"] == text
 
 
 def test_catalog_recovers_saved_response_with_redundant_blank_line(gateway):

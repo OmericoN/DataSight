@@ -10,24 +10,24 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import lxml.etree as etree
 
 from datasight.config import MARKDOWN_DIR
-from datasight.domain.results import RenderResult
+from datasight.domain.results import RENDERER_VERSION as RENDERER_VERSION, RenderResult
 from datasight.infrastructure.ingestion.converter import validate_tei
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
 
 TEI = "http://www.tei-c.org/ns/1.0"
 XML = "http://www.w3.org/XML/1998/namespace"
 NS = {"t": TEI}
-RENDERER_VERSION = "tei-renderer-v6"
+LEGACY_RENDERER_VERSION = "tei-renderer-v6"
 RenderProfile = Literal["full_body", "pruned"]
 DEFAULT_RENDER_PROFILE: RenderProfile = "pruned"
 logger = logging.getLogger(__name__)
 
-# Full body remains available for evaluation and LLM extraction.
-PRUNED_SECTION_PATTERNS = (
+LEGACY_PRUNED_SECTION_PATTERNS = (
     r"related.work",
     r"previous.work",
     r"prior.work",
@@ -44,11 +44,20 @@ PRUNED_SECTION_PATTERNS = (
     r"abbreviation",
     r"ethical",
 )
+PRUNED_HEADINGS = re.compile(
+    r"(?:related work|previous work|prior work|literature review|acknowledg[e]?ments?|"
+    r"funding(?: information)?|competing interests?|conflicts? of interest|author contributions?|abbreviations)",
+    re.I,
+)
+DELIMITED_LINKS = re.compile(r"\[(https?://[^\[\]]{1,2000})\]|<(https?://[^<>]{1,2000})>", re.I)
+LINK_SEPARATOR = re.compile(r"[,;]\s*(?=https?://)", re.I)
+DOI_HOSTS = {"doi.org", "dx.doi.org"}
 
 
 @dataclass
 class _RenderState:
     profile: RenderProfile
+    legacy: bool
     references: dict[str, dict[str, Any]]
     footnotes: dict[str, str]
     cited_refs: set[str] = field(default_factory=set)
@@ -74,7 +83,62 @@ def _first_text(element: etree._Element, xpath: str) -> str:
     return _text(matches[0]) if matches else ""
 
 
-def _parse_references(root: etree._Element) -> dict[str, dict[str, Any]]:
+def _web_url(value: str) -> bool:
+    try:
+        url = urlsplit(value)
+        hostname = url.hostname or ""
+    except ValueError:
+        return False
+    return (
+        url.scheme in {"http", "https"}
+        and "." in hostname.strip(".")
+        and not any(char.isspace() for char in value)
+    )
+
+
+def _repair_delimited_links(markdown: str) -> str:
+    """Join PDF word fragments inside an explicitly delimited list of URLs."""
+    def replace(match: re.Match[str]) -> str:
+        source = match.group(1) or match.group(2)
+        if "\n\n" in source:
+            return match.group(0)
+        links = []
+        for raw in LINK_SEPARATOR.split(source):
+            parts = raw.strip().split()
+            joined = "".join(parts)
+            if not _web_url(joined):
+                return match.group(0)
+            # An intact URL followed by ordinary words may be a prose link label.
+            if len(parts) > 1 and _web_url(parts[0]) and not parts[0].endswith(("/", "+", "-", "_")):
+                return match.group(0)
+            if len(parts) > 2 and not urlsplit(joined).path:
+                return match.group(0)
+            links.append(joined)
+        return match.group(0)[0] + ", ".join(links) + match.group(0)[-1]
+
+    return DELIMITED_LINKS.sub(replace, markdown)
+
+
+def _normalized_reference_links(dois: list[str], urls: list[str]) -> tuple[list[str], list[str]]:
+    identifiers = list(dict.fromkeys(
+        re.sub(r"^https?://(?:dx\.)?doi\.org/", "", "".join(value.split()), flags=re.I)
+        for value in dois
+    ))
+    links = []
+    for value in dict.fromkeys("".join(url.split()) for url in urls):
+        if not _web_url(value):
+            continue
+        parsed = urlsplit(value)
+        prefix = parsed.path.lstrip("/").casefold()
+        if parsed.hostname in DOI_HOSTS and any(
+            doi.casefold() == prefix or doi.casefold().startswith(prefix + ".") for doi in identifiers
+        ):
+            continue  # Prefer the complete structured DOI over a duplicate or truncated resolver link.
+        links.append(value)
+    return identifiers, links
+
+
+def _parse_references(root: etree._Element, *, legacy: bool) -> dict[str, dict[str, Any]]:
     references: dict[str, dict[str, Any]] = {}
     for index, bib in enumerate(root.xpath("//t:listBibl/t:biblStruct | //t:listBibl/t:bibl", namespaces=NS), 1):
         xml_id = bib.get(f"{{{XML}}}id") or f"reference-{index}"
@@ -92,13 +156,18 @@ def _parse_references(root: etree._Element) -> dict[str, dict[str, Any]]:
                 break
         dois = [_text(node) for node in bib.xpath(".//t:idno[@type='DOI']", namespaces=NS) if _text(node)]
         urls = [node.get("target", "") for node in bib.xpath(".//t:ptr[@target]", namespaces=NS)]
+        if legacy:
+            dois, urls = dois[:1], urls[:1]
+        else:
+            urls.extend(node.get("target", "") for node in bib.xpath(".//t:ref[@target]", namespaces=NS))
+            dois, urls = _normalized_reference_links(dois, urls)
         label = f"{authors[0]}, {year}" if authors else year or xml_id
         references[xml_id] = {
             "authors": authors,
             "title": title,
             "year": year,
-            "doi": dois[0] if dois else "",
-            "url": urls[0] if urls else "",
+            "dois": dois,
+            "urls": urls,
             "label": label,
             "raw": " ".join(_clean_text(" ".join(bib.itertext())).split()),
         }
@@ -111,10 +180,6 @@ def _parse_footnotes(root: etree._Element) -> dict[str, str]:
         for note in root.xpath("//t:note[@place='foot']", namespaces=NS)
         if note.get(f"{{{XML}}}id") and _text(note)
     }
-
-
-def _is_pruned(heading: str) -> bool:
-    return any(re.search(pattern, heading, re.I) for pattern in PRUNED_SECTION_PATTERNS)
 
 
 def _render_children(element: etree._Element, state: _RenderState, depth: int) -> str:
@@ -155,8 +220,11 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
         heading = _text(heads[0]) if heads else ""
         if heading:
             state.source_sections.append(heading)
-        if state.profile == "pruned" and heading and _is_pruned(heading):
-            return ""
+        if state.profile == "pruned" and heading:
+            if state.legacy and any(re.search(pattern, heading, re.I) for pattern in LEGACY_PRUNED_SECTION_PATTERNS):
+                return ""
+            if not state.legacy and PRUNED_HEADINGS.fullmatch(heading.rstrip(".:")) and not element.findall("t:div", NS):
+                return ""
         if heading:
             state.rendered_sections.append(heading)
         return _render_children(element, state, depth + 1)
@@ -190,11 +258,15 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
             return f"[^{number}]"
         raw_target = element.get("target", "")
         if raw_target and not raw_target.startswith("#"):
+            if not state.legacy and _web_url("".join(raw_target.split())):
+                raw_target = "".join(raw_target.split())
             return f"{visible} ({raw_target})" if visible and visible != raw_target else raw_target
         return visible
 
     if tag == "ptr":
-        return element.get("target", "")
+        target = element.get("target", "")
+        compact = "".join(target.split())
+        return compact if not state.legacy and _web_url(compact) else target
 
     if tag == "figure":
         state.figures += 1
@@ -233,11 +305,14 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
     return _render_children(element, state, depth)
 
 
-def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str, dict[str, Any], list[str]]:
+def _render_document(xml_path: str | Path, profile: RenderProfile, version: str) -> tuple[str, dict[str, Any], list[str]]:
+    if version not in {RENDERER_VERSION, LEGACY_RENDERER_VERSION}:
+        raise ValueError(f"Unsupported Markdown renderer version: {version}")
+    legacy = version == LEGACY_RENDERER_VERSION
     validate_tei(xml_path)
     tree = etree.parse(str(xml_path), parser=etree.XMLParser(resolve_entities=False, no_network=True))
     root = tree.getroot()
-    state = _RenderState(profile, _parse_references(root), _parse_footnotes(root))
+    state = _RenderState(profile, legacy, _parse_references(root, legacy=legacy), _parse_footnotes(root))
     chunks: list[str] = []
 
     title = _first_text(root, "//t:titleStmt/t:title[@type='main']")
@@ -258,27 +333,29 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
 
     body = root.find(f"{{{TEI}}}text/{{{TEI}}}body")
     body_markdown = "" if body is None else _render_children(body, state, 0)
-    if not _clean_text(body_markdown):
+    if legacy and not _clean_text(body_markdown):
         raise ValueError("Canonical TEI body rendered to empty Markdown")
     if profile == "full_body":
         chunks.append("\n\n## Body\n\n")
     chunks.append(body_markdown)
 
-    if profile == "full_body":
+    back_markdown = ""
+    if profile == "full_body" or not legacy:
         back = root.find(f"{{{TEI}}}text/{{{TEI}}}back")
         if back is not None:
-            for child in back:
-                if isinstance(child.tag, str) and etree.QName(child.tag).localname != "listBibl":
-                    chunks.append(_render_element(child, state, 0))
+            back_markdown = "".join(_render_element(child, state, 0) for child in back)
+            chunks.append(back_markdown)
         for footnote_id in state.footnotes:
             state.used_footnotes.setdefault(footnote_id, len(state.used_footnotes) + 1)
+    if not _clean_text(body_markdown + back_markdown):
+        raise ValueError("Canonical TEI body and back matter rendered to empty Markdown")
 
     if state.used_footnotes:
         chunks.append("\n\n---\n\n## Footnotes\n\n")
         for footnote_id, number in sorted(state.used_footnotes.items(), key=lambda item: item[1]):
             chunks.append(f"[^{number}]: {state.footnotes[footnote_id]}\n\n")
 
-    reference_ids = set(state.references) if profile == "full_body" else state.cited_refs
+    reference_ids = state.cited_refs if legacy and profile == "pruned" else set(state.references)
     if reference_ids:
         chunks.append("\n\n---\n\n## References\n\n")
         for ref_id in state.references:
@@ -286,12 +363,14 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
                 continue
             ref = state.references[ref_id]
             authors_text = ", ".join(ref["authors"]) or "Unknown"
-            doi = f" DOI: https://doi.org/{ref['doi']}" if ref["doi"] else ""
-            url = f" URL: {ref['url']}" if ref["url"] else ""
-            reference_text = ref["raw"] if profile == "full_body" else f"{authors_text} ({ref['year']}). {ref['title']}."
-            chunks.append(f"- **[{ref['label']}]** {{#{ref_id}}} {reference_text}{doi}{url}\n\n")
+            links = "".join(f" DOI: https://doi.org/{doi}" for doi in ref["dois"] if doi)
+            links += "".join(f" URL: {url}" for url in ref["urls"] if url)
+            reference_text = ref["raw"] if profile == "full_body" or (not legacy and not ref["title"]) else f"{authors_text} ({ref['year']}). {ref['title']}."
+            chunks.append(f"- **[{ref['label']}]** {{#{ref_id}}} {reference_text}{links}\n\n")
 
     markdown = "".join(chunks).replace("\r\n", "\n")
+    if not legacy:
+        markdown = _repair_delimited_links(markdown)
     markdown = re.sub(r"\n{4,}", "\n\n\n", markdown).strip() + "\n"
     body_characters = len("".join(body.itertext())) if body is not None else 0
     metrics: dict[str, Any] = {
@@ -312,10 +391,10 @@ def _render_document(xml_path: str | Path, profile: RenderProfile) -> tuple[str,
 
 
 def extract_markdown(
-    xml_path: str | Path, profile: RenderProfile = DEFAULT_RENDER_PROFILE
+    xml_path: str | Path, profile: RenderProfile = DEFAULT_RENDER_PROFILE, *, version: str = RENDERER_VERSION,
 ) -> str:
     """Return Markdown while preserving the historical string-returning API."""
-    return _render_document(xml_path, profile)[0]
+    return _render_document(xml_path, profile, version)[0]
 
 
 def _metadata_path(output_path: Path) -> Path:
@@ -348,23 +427,29 @@ def _write_atomic(path: Path, content: bytes) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def _render_directory(profile: RenderProfile, version: str) -> Path:
+    return MARKDOWN_DIR if version == LEGACY_RENDERER_VERSION else MARKDOWN_DIR / version / profile
+
+
 def render_to_markdown(
     xml_path: Path,
     output_path: Path | None = None,
     paper_id: str | None = None,
     overwrite: bool = False,
     profile: RenderProfile = DEFAULT_RENDER_PROFILE,
+    *,
+    version: str = RENDERER_VERSION,
 ) -> RenderResult:
     xml_path = Path(xml_path)
     paper_id = paper_id or xml_path.stem.replace(".tei", "")
-    output_path = Path(output_path) if output_path else MARKDOWN_DIR / f"{paper_id}.md"
+    output_path = Path(output_path) if output_path else _render_directory(profile, version) / f"{paper_id}.md"
     source_hash = sha256_file(xml_path) if xml_path.exists() else None
     metadata_path = _metadata_path(output_path)
 
     if output_path.exists() and not overwrite and source_hash:
         metadata = _read_metadata(metadata_path)
         if (
-            metadata.get("producer_version") == RENDERER_VERSION
+            metadata.get("producer_version") == version
             and metadata.get("source_sha256") == source_hash
             and metadata.get("profile") == profile
             and metadata.get("sha256") == sha256_file(output_path)
@@ -381,20 +466,20 @@ def render_to_markdown(
                 references_count=int(metrics.get("references", 0)),
                 sha256=metadata["sha256"],
                 source_sha256=source_hash,
-                producer_version=RENDERER_VERSION,
+                producer_version=version,
                 profile=profile,
                 warnings=list(metadata.get("warnings") or []),
                 quality_metrics={**metrics, "cache_reused": True},
             )
 
     try:
-        markdown, metrics, warnings = _render_document(xml_path, profile)
+        markdown, metrics, warnings = _render_document(xml_path, profile, version)
         _write_atomic(output_path, markdown.encode("utf-8"))
         digest = sha256_file(output_path)
         metadata = {
             "sha256": digest,
             "source_sha256": source_hash,
-            "producer_version": RENDERER_VERSION,
+            "producer_version": version,
             "profile": profile,
             "warnings": warnings,
             "quality_metrics": metrics,
@@ -410,7 +495,7 @@ def render_to_markdown(
             references_count=int(metrics["references"]),
             sha256=digest,
             source_sha256=source_hash,
-            producer_version=RENDERER_VERSION,
+            producer_version=version,
             profile=profile,
             warnings=warnings,
             quality_metrics={**metrics, "cache_reused": False},
@@ -424,7 +509,7 @@ def render_to_markdown(
             message=f"Render failed: {exc}",
             error=str(exc),
             source_sha256=source_hash,
-            producer_version=RENDERER_VERSION,
+            producer_version=version,
             profile=profile,
             warnings=[],
             quality_metrics={},
@@ -438,8 +523,10 @@ def render_papers(
     xml_path_key: str = "xml_path",
     overwrite: bool = False,
     profile: RenderProfile = DEFAULT_RENDER_PROFILE,
+    *,
+    version: str = RENDERER_VERSION,
 ) -> list[RenderResult]:
-    destination = Path(output_dir) if output_dir else MARKDOWN_DIR
+    destination = Path(output_dir) if output_dir else _render_directory(profile, version)
     destination.mkdir(parents=True, exist_ok=True)
     results: list[RenderResult] = []
     for paper in papers:
@@ -453,6 +540,7 @@ def render_papers(
                     md_path=destination / f"{paper_id}.md",
                     success=False,
                     message="Missing XML path",
+                    producer_version=version,
                     error="Missing XML path",
                     profile=profile,
                 )
@@ -465,6 +553,7 @@ def render_papers(
                 paper_id=paper_id,
                 overwrite=overwrite,
                 profile=profile,
+                version=version,
             )
         )
     logger.info("Rendered %s/%s documents", sum(result.success for result in results), len(results))

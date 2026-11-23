@@ -1,10 +1,18 @@
 # Dataset evidence extraction
 
 DataSight owns extraction; the DSRI gateway and vLLM backend remain generic.
-`extract_features` accepts only selected publications with a successful mention
-detection record for their rendered text. A successful scan with zero rule
-candidates qualifies. The detector reads Markdown, so HTML needs to be rendered
-to Markdown and pass the same scan. Automatic workflows still end at extraction.
+`detect_mentions` now screens selected publications for plausible dataset use or
+creation with a short structured decision from the configured model. It uses the
+full-body Markdown or reconstructs it from the TEI linked to a pruned render.
+It includes qualitative and unnamed data, caption and table evidence, and data
+collected by the authors. Bibliography entries are excluded from screening.
+A publication is screened out only when every excerpt of its full-body text
+receives `no_use`. Likely use, ambiguous evidence, incomplete source text, and
+inference failures keep a publication eligible for `extract_features`.
+
+The screening decision is saved with the render hash and detector version.
+`papers.csv` includes the decision and the reason in `detection_metrics`.
+`rules-v3` and its candidate records remain available for historical runs.
 
 ## Run it
 
@@ -34,30 +42,35 @@ in run configuration, checkpoints, browser requests, or diagnostic responses.
 The bundled tokenizer comes from the pinned [Qwen3.8-27B revision](https://huggingface.co/Qwen/Qwen3.8-27B/tree/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0)
 and ships with its [Apache 2.0 license](src/datasight/assets/QWEN-LICENSE.txt).
 
-Start the Compose `api`, `worker`, and `llm-worker` services. The LLM worker uses one
-prefork process by default; `LLM_WORKER_CONCURRENCY` raises the number of
-publication tasks it can run at once. Ordinary pipeline work uses the existing
-worker. Do not run a local resume concurrently with queued extraction of the
-same run.
+Start the Compose `api`, `worker`, and `llm-worker` services. The LLM worker runs
+both screening and extraction and uses one prefork process by default.
+`LLM_WORKER_CONCURRENCY` raises the number of publication tasks it can run at once.
+Ordinary ingestion uses the existing worker. Do not run a local resume
+concurrently with queued extraction of the same run.
 
 Start a **new run** from the GUI to use the default catalog extractor. Open
 **Dataset extraction** on the run page and select a paper to inspect its
 candidates and exact source evidence. Catalog extraction uses the run's renderer
-profile, which defaults to `pruned`. It verifies and freezes the same Markdown
-hash that passed mention detection.
+profile, which defaults to `pruned`. The current renderer keeps scientific back
+matter, including dataset methods and availability, alongside compact references.
+It stores renders by version and profile, and extraction freezes the same
+Markdown hash that passed mention detection.
 
-Catalog extraction sends one compact request if the rendered source fits. It plans larger
-papers locally in contiguous chunks, using the actual serialized prompt and
-pinned tokenizer. A truncated chunk is split once during the initial run.
-New runs use `catalog-v4` to collect dataset identity fields and explicit
-current-paper roles (created, used, comparison, discussed). Bibliography-only
-evidence cannot establish a role. A model-reported incomplete scan uses the same
-bounded chunk splitting as a truncated response. Each populated value
-cites a line in that dataset's evidence. Possible data deposits in the rendered
-bibliography are highlighted in the same request. Unsupported values are
-omitted and flagged on the candidate for review.
-On explicit resume, a saved truncated half can be split once more. Fast v1 runs
-can use compact output as a fallback for a saved terminal truncation. Successful
+New runs use `catalog-v5`. It plans contiguous source chunks up to 16,000
+characters, then checks each serialized request with the pinned tokenizer.
+Catalog extraction sends one chunk at a time and checkpoints each validated response.
+Truncated, incomplete, or ungrounded scans can be subdivided up to three levels
+per initial chunk. A fact that points outside its own dataset group is omitted
+and flagged for review. Grounded facts and complete scan coverage are retained.
+The extractor reconciles dataset availability links and explicit deposit
+citations across chunks, keeping the source offsets for the resulting aliases,
+DOIs, links, creators, and release years. Bibliography-only evidence and clearly
+attributed prior work cannot establish use by the current paper.
+
+On explicit resume, saved successful chunks are reused and saved incomplete
+parents lead back to their subdivision. Older prompt versions keep their
+frozen policies. Fast v1 runs can use compact output as a fallback for a saved
+terminal truncation. Successful
 chunks are checkpointed, and incomplete papers show a failure reason in the
 panel. Candidates with valid evidence and an unsupported name are retained as
 unnamed and marked for review. The catalog extractor merges clear repeated names across

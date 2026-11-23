@@ -3,12 +3,65 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from datasight.domain.schemas import UMDatasetRecord
+from datasight.matching.normalization import normalize_identifier, normalize_text
+
+
+REUSE_TERMS = ("secondary analysis", "external validation", "publicly available data", "publicly available dataset")
+REUSE_SEARCH = " OR ".join(f'"{term}"' for term in REUSE_TERMS)
+
+
+def mentions_reuse(work: Mapping[str, Any]) -> bool:
+    text = f"{work.get('title') or ''} {work.get('abstract') or ''}".casefold()
+    return any(term in text for term in REUSE_TERMS)
+
+
+def _title_key(title: str | None) -> str:
+    return " ".join(re.findall(r"[^\W_]+", normalize_text(title)))
+
+
+@dataclass
+class CatalogPublications:
+    work_ids: set[str] = field(default_factory=set)
+    related_work_ids: set[str] = field(default_factory=set)
+    dois: set[str] = field(default_factory=set)
+    source_titles: set[str] = field(default_factory=set)
+
+    @classmethod
+    def from_records(cls, records: Iterable[UMDatasetRecord]) -> CatalogPublications:
+        catalog = cls()
+        for record in records:
+            raw = _openalex_raw(record.raw)
+            catalog.work_ids.add(_id_tail(raw.get("id") or record.um_dataset_id))
+            catalog.related_work_ids.update(work for work in _work_ids(raw.get("related_works")) if work.startswith("W"))
+            if doi := normalize_identifier(record.doi):
+                catalog.dois.add(doi)
+            title = re.sub(
+                r"^(?:(?:replication|supplementary|supplemental) (?:data|files|materials?) (?:for|to)|"
+                r"data (?:from|for)|dataset for|dataset(?=:))\b[\s:\"'-]*",
+                "", record.title.strip(), flags=re.IGNORECASE,
+            )
+            for key in {_title_key(record.title), _title_key(title)}:
+                if len(key) >= 18 and len(key.split()) >= 3:
+                    catalog.source_titles.add(key)
+        return catalog
+
+    def exclusion_reason(self, work: Mapping[str, Any]) -> str | None:
+        if _title_key(work.get("title")) in self.source_titles:
+            return "source_title"
+        work_id = _id_tail(work.get("paperId") or work.get("id"))
+        if work_id in self.work_ids or work_id in self.related_work_ids:
+            return "catalog_work"
+        if normalize_identifier(work.get("doi")) in self.dois:
+            return "catalog_doi"
+        return None
+
 
 @dataclass(frozen=True)
 class DiscoveryOptions:
@@ -27,6 +80,7 @@ class DiscoveryProfile:
     source_names: tuple[str, ...] = ()
     openalex_work_ids: tuple[str, ...] = ()
     related_work_ids: tuple[str, ...] = ()
+    catalog: CatalogPublications = field(default_factory=CatalogPublications)
 
     @property
     def search_terms(self) -> tuple[str, ...]:
@@ -49,6 +103,7 @@ class DiscoveryQuery:
 
 
 def build_discovery_profile(records: Iterable[UMDatasetRecord], max_terms: int = 20) -> DiscoveryProfile:
+    records = list(records)
     topic_ids: Counter[str] = Counter()
     keyword_terms: Counter[str] = Counter()
     concept_terms: Counter[str] = Counter()
@@ -75,7 +130,7 @@ def build_discovery_profile(records: Iterable[UMDatasetRecord], max_terms: int =
         _count_term(source_names, primary_source)
         for related_id in openalex.get("related_works") or []:
             related_work_id = _id_tail(str(related_id))
-            if related_work_id:
+            if related_work_id.startswith("W"):
                 related_work_ids[related_work_id] += 1
 
     return DiscoveryProfile(
@@ -85,6 +140,7 @@ def build_discovery_profile(records: Iterable[UMDatasetRecord], max_terms: int =
         source_names=tuple(term for term, _ in source_names.most_common(max_terms // 2)),
         openalex_work_ids=tuple(sorted(work_ids)),
         related_work_ids=tuple(work for work, _ in related_work_ids.most_common(max_terms)),
+        catalog=CatalogPublications.from_records(records),
     )
 
 
@@ -105,6 +161,12 @@ def build_openalex_discovery_queries(
                         filters={**base_filters, "cites": work_id_batch},
                         sort="cited_by_count:desc",
                         reason="um_dataset_citation",
+                        seed_work_ids=work_id_batch,
+                    ),
+                    DiscoveryQuery(
+                        query=REUSE_SEARCH,
+                        filters={**base_filters, "cites": work_id_batch},
+                        reason="um_dataset_reuse_search",
                         seed_work_ids=work_id_batch,
                     ),
                     DiscoveryQuery(
@@ -139,10 +201,9 @@ def build_openalex_discovery_queries(
     if profile and profile.related_work_ids:
         queries.append(
             DiscoveryQuery(
-                query=None,
-                filters={**base_filters, "openalex": profile.related_work_ids[:100]},
-                sort="cited_by_count:desc",
-                reason="related_work_seed",
+                query=REUSE_SEARCH,
+                filters={**base_filters, "cites": profile.related_work_ids[:100]},
+                reason="related_work_citation",
             )
         )
     return queries
@@ -194,9 +255,12 @@ def score_openalex_candidate(
 
     relation = _um_relation(publication, raw_mapping, profile)
     if relation == "dataset":
-        score += 0.50
-    elif relation == "citation":
         score += 0.40
+    elif relation == "citation":
+        score += 0.50
+    reuse_search_hit = "um_dataset_reuse_search" in (publication.get("discovery_reasons") or [])
+    if relation and (mentions_reuse(publication) or reuse_search_hit):
+        score += 0.10
 
     year = publication.get("year") or raw_mapping.get("publication_year")
     if isinstance(year, int) and year >= 2020:
@@ -214,7 +278,7 @@ def dedupe_and_score_publications(
     known_dataset_ids = set(profile.openalex_work_ids if profile else ())
     for publication in publications:
         paper_id = _id_tail(publication.get("paperId") or publication.get("id"))
-        if not paper_id or paper_id in known_dataset_ids:
+        if not paper_id or paper_id in known_dataset_ids or (profile and profile.catalog.exclusion_reason(publication)):
             continue
         scored = dict(publication)
         raw = scored.get("raw") if isinstance(scored.get("raw"), Mapping) else scored
@@ -345,10 +409,10 @@ def _um_relation(
     profile: DiscoveryProfile | None,
 ) -> str | None:
     reasons = set(publication.get("discovery_reasons") or [])
+    if reasons & {"um_dataset_citation", "um_dataset_reuse_search"}:
+        return "citation"
     if "um_dataset_link" in reasons:
         return "dataset"
-    if "um_dataset_citation" in reasons:
-        return "citation"
     if not profile:
         return None
     known_ids = set(profile.openalex_work_ids)

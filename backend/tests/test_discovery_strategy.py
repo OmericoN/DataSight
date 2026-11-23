@@ -10,7 +10,7 @@ from datasight.domain.discovery_strategy import (
     build_direct_queries,
     build_exact_queries,
     build_focused_queries,
-    build_related_queries,
+    build_citing_queries,
     build_random_query,
     distinctive_titles,
     informative_keywords,
@@ -49,6 +49,7 @@ def test_catalog_profile_describes_ordered_phases_without_semantic_search():
     assert "Medicine" not in profile["top_keywords"]
     assert [phase["id"] for phase in profile["phases"]] == [
         "direct",
+        "source_citations",
         "exact",
         "related",
         "focused",
@@ -72,12 +73,13 @@ def test_direct_queries_cover_all_work_ids_in_batches_without_pdf_or_focus_filte
 
     links = [query for query in queries if query.evidence_reason == EvidenceReason.DATASET_LINK]
     citations = [query for query in queries if query.evidence_reason == EvidenceReason.DATASET_CITATION]
-    assert len(links) == len(citations) == 3
+    assert len(links) == 3
+    assert len([query for query in citations if query.query is None]) == 3
+    assert len([query for query in citations if query.query and "secondary analysis" in query.query]) == 3
     assert all(query.phase == DiscoveryPhase.DIRECT for query in queries)
     assert all(query.filters["publication_year"] == "2020-2025" for query in queries)
     assert all(query.filters["type"] == ["article", "preprint"] for query in queries)
     assert all("has_pdf_url" not in query.filters for query in queries)
-    assert all(query.query is None for query in queries)
     filter_batches = [
         value
         for query in queries
@@ -89,7 +91,7 @@ def test_direct_queries_cover_all_work_ids_in_batches_without_pdf_or_focus_filte
 
 def test_direct_query_maps_structured_openalex_ids_back_to_um_catalog_ids():
     source = record(1, um_dataset_id="um-dataset-1", raw={"openalex": {"id": "W1"}})
-    query = build_direct_queries([source])[0]
+    query = next(q for q in build_direct_queries([source]) if q.evidence_reason == EvidenceReason.DATASET_LINK)
 
     assert structured_direct_dataset_ids(
         {"raw": {"datasets": [{"id": "https://openalex.org/W1"}]}}, query
@@ -126,14 +128,16 @@ def test_distinctive_aliases_and_focused_queries_remove_generic_terms_and_apply_
     assert all("education" in (query.query or "") for query in queries)
 
 
-def test_related_work_queries_attribute_each_work_only_to_source_datasets():
-    queries = build_related_queries(
-        [
-            record(1, raw={"openalex": {"id": "W1", "related_works": ["W101"]}}),
-            record(2, raw={"openalex": {"id": "W2", "related_works": ["W102"]}}),
-        ]
-    )
-    assert queries[0].matched_dataset_ids_by_work == {"W101": ("W1",), "W102": ("W2",)}
+def test_citation_expansion_queries_batch_distinct_seeds_and_search_for_reuse():
+    seeds = [f"W{i}" for i in range(101)] + ["W1"]
+    queries = build_citing_queries(seeds, DiscoveryPhase.RELATED)
+    assert len(queries) == 2
+    for query, expected_size in zip(queries, (100, 1), strict=True):
+        batch = query.filters["cites"]
+        assert isinstance(batch, list)
+        assert len(batch) == expected_size
+    assert all(query.query and '"secondary analysis"' in query.query for query in queries)
+    assert all(query.evidence_reason == EvidenceReason.RELATED_WORK_CITATION for query in queries)
 
 
 def test_random_query_uses_native_seeded_sample_with_shared_filters():
@@ -161,7 +165,7 @@ def test_language_filter_is_shared_by_every_strategy_query():
     queries = [
         *build_direct_queries(records, language="en"),
         *build_exact_queries(records, language="en"),
-        *build_related_queries(records, language="en"),
+        *build_citing_queries(["W101"], DiscoveryPhase.RELATED, language="en"),
         *build_focused_queries(records, {"Population Health": "T1"}, language="en"),
         build_random_query(10, 42, language="en"),
     ]
@@ -182,7 +186,7 @@ def test_ranking_uses_tiers_not_probability_and_reserves_ready_pool_capacity():
     )
 
     assert [candidate["paper_id"] for candidate in candidates] == ["W900", "W901"]
-    assert candidates[0]["candidate_strength"] == 100
+    assert candidates[0]["candidate_strength"] == 90
     assert candidates[0]["evidence_tier"] == "direct"
     assert candidates[0]["included"] is False
     assert candidates[1]["included"] is True

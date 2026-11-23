@@ -86,14 +86,11 @@ class UMDatasetRepositoryMixin:
             psycopg2.extras.Json(record.raw),
         )
 
-    def list_um_dataset_records(self) -> list[UMDatasetRecord]:
-        self.cursor.execute(
-            """
-            SELECT um_dataset_id, title, aliases, creators, doi, url, year, repository, keywords, raw
-            FROM um_datasets
-            ORDER BY id
-            """
-        )
+    def list_um_dataset_records(self, *, for_matching: bool = False) -> list[UMDatasetRecord]:
+        columns = "um_dataset_id, title, aliases, creators, doi, url, year"
+        if not for_matching:
+            columns += ", repository, keywords, raw"
+        self.cursor.execute(f"SELECT {columns} FROM um_datasets ORDER BY id")
         return [UMDatasetRecord.model_validate(dict(row)) for row in self.cursor.fetchall()]
 
     def list_um_dataset_catalog(

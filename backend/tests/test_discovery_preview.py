@@ -70,7 +70,7 @@ def test_manual_preview_returns_every_retained_candidate(monkeypatch):
 
     preview = discovery_preview.create_discovery_preview(
         {
-            "strategy_version": 2,
+            "strategy_version": 3,
             "mode": "manual",
             "manual_query": "dataset reuse",
             "focus_query": "",
@@ -100,7 +100,7 @@ def test_random_preview_uses_seeded_sample_without_catalog(monkeypatch):
 
     preview = discovery_preview.create_discovery_preview(
         {
-            "strategy_version": 2,
+            "strategy_version": 3,
             "mode": "random",
             "focus_query": "",
             "manual_query": None,
@@ -149,7 +149,7 @@ def test_catalog_funnel_completes_direct_phase_then_stops_before_exact(monkeypat
 
     preview = discovery_preview.create_discovery_preview(
         {
-            "strategy_version": 2,
+            "strategy_version": 3,
             "mode": "catalog_funnel",
             "focus_query": "must not narrow direct",
             "manual_query": None,
@@ -160,8 +160,9 @@ def test_catalog_funnel_completes_direct_phase_then_stops_before_exact(monkeypat
         }
     )
 
-    assert len(FakeOpenAlexClient.calls) == 2
-    assert all(call["query"] is None for call in FakeOpenAlexClient.calls)
+    assert len(FakeOpenAlexClient.calls) == 3
+    assert all("must not narrow direct" not in (call["query"] or "") for call in FakeOpenAlexClient.calls)
+    assert "reuse_language" in preview["candidates"][0]["evidence_reasons"]
     assert preview["completed_phases"] == ["direct"]
     assert preview["stop_reason"] == "ready_target_met"
     assert set(preview["phase_results"]) == {"direct"}
@@ -182,7 +183,7 @@ def test_cost_ceiling_retains_partial_direct_results(monkeypatch):
 
     preview = discovery_preview.create_discovery_preview(
         {
-            "strategy_version": 2,
+            "strategy_version": 3,
             "mode": "catalog_funnel",
             "focus_query": "",
             "manual_query": None,
@@ -198,3 +199,38 @@ def test_cost_ceiling_retains_partial_direct_results(monkeypatch):
     assert preview["partial"] is True
     assert preview["stop_reason"] == "cost_ceiling"
     assert preview["phase_results"]["direct"]["status"] == "partial"
+
+
+def test_origin_paper_seeds_downstream_search_without_using_a_processing_slot(monkeypatch):
+    source_title = "Changing patterns of participation in longitudinal surveys"
+    record = UMDatasetRecord(
+        um_dataset_id="survey", title=f"Replication Data for: {source_title}",
+        doi="10.1234/survey", raw={"openalex": {"id": "W1", "related_works": ["W2"]}},
+    )
+    monkeypatch.setattr(FakeRepository, "records", [record])
+    monkeypatch.setattr(discovery_preview, "PipelineRepository", FakeRepository)
+
+    class Client(FakeOpenAlexClient):
+        def search_works_with_meta(self, **kwargs):
+            if kwargs["filters"].get("cites") == ["W3"]:
+                assert kwargs["filters"]["language"] == "en" and kwargs["query"]
+                rows = [("W4", "A secondary analysis of survey participation", None)]
+            else:
+                rows = [
+                    ("W1", "Catalog record", None), ("W2", "Known related paper", None),
+                    ("W3", source_title, None), ("W5", "Another deposit record", "https://doi.org/10.1234/SURVEY"),
+                ]
+            works = [dict(paperId=pid, title=title, doi=doi, open_access_url="paper.pdf") for pid, title, doi in rows]
+            return OpenAlexSearchResult(works=works, total_count=len(works), cost_usd=0.001, calls=1, rate_limit={})
+
+    monkeypatch.setattr(discovery_preview, "OpenAlexClient", Client)
+    preview = discovery_preview.create_discovery_preview({
+        "strategy_version": 3, "mode": "catalog_funnel", "processing_limit": 1, "language": "en",
+    })
+    assert preview["phase_results"]["direct"]["ready_after_phase"] == 0
+    assert preview["metrics"]["unique_catalog_works_skipped"] == 4
+    assert preview["completed_phases"] == ["direct", "source_citations"]
+    candidate, = preview["candidates"]
+    assert candidate["paper_id"] == "W4" and candidate["included"]
+    assert candidate["evidence_reasons"] == ["source_paper_citation"]
+    assert candidate["evidence_tier"] == "expanded" and candidate["matched_um_dataset_ids"] == []

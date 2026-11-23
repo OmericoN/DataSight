@@ -94,6 +94,7 @@ class PipelineItemRepositoryMixin:
                 pi.pipeline_run_id,
                 pi.status AS item_status,
                 pr.config->>'render_profile' AS render_profile,
+                pr.config->>'renderer_version' AS renderer_version,
                 p.id AS publication_row_id,
                 p.paper_id,
                 p.title,
@@ -102,7 +103,9 @@ class PipelineItemRepositoryMixin:
                 xml.path AS xml_path,
                 md.path AS markdown_path,
                 md.id AS markdown_artifact_id,
-                md.sha256 AS markdown_sha256
+                md.sha256 AS markdown_sha256,
+                md.metadata AS markdown_metadata,
+                screening_xml.path AS screening_xml_path
             FROM pipeline_items pi
             JOIN pipeline_runs pr ON pr.id = pi.pipeline_run_id
             JOIN publications p ON p.id = pi.publication_id
@@ -110,8 +113,19 @@ class PipelineItemRepositoryMixin:
               ON pdf.publication_id = p.id AND pdf.artifact_type = 'pdf'
             LEFT JOIN artifacts xml
               ON xml.publication_id = p.id AND xml.artifact_type = 'tei_xml'
-            LEFT JOIN artifacts md
-              ON md.publication_id = p.id AND md.artifact_type = 'markdown'
+            LEFT JOIN LATERAL (
+                SELECT a.* FROM artifacts a
+                WHERE a.publication_id = p.id AND a.artifact_type = 'markdown'
+                  AND (pr.config->>'render_profile' IS NULL OR a.metadata->>'profile' = pr.config->>'render_profile')
+                  AND (pr.config->>'renderer_version' IS NULL OR a.metadata->>'producer_version' = pr.config->>'renderer_version')
+                ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+            ) md ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT a.path FROM artifacts a
+                WHERE a.publication_id = p.id AND a.artifact_type = 'tei_xml'
+                  AND a.sha256 = md.metadata->>'source_sha256'
+                ORDER BY a.created_at DESC, a.id DESC LIMIT 1
+            ) screening_xml ON TRUE
             WHERE pi.id = %s
             """,
             (item_id,),
@@ -205,6 +219,10 @@ class PipelineItemRepositoryMixin:
         error: str | None = None,
     ) -> None:
         stage_value = PipelineStage(stage).value
+        screened_out = (
+            status == "successful" and stage_value == PipelineStage.DETECT_MENTIONS.value
+            and (metrics or {}).get("decision") == "no_use"
+        )
         self.cursor.execute(
             """
             UPDATE pipeline_item_stages
@@ -223,6 +241,19 @@ class PipelineItemRepositoryMixin:
             self._skip_downstream_item_stages(item_id, stage_value)
             self.cursor.execute(
                 "UPDATE pipeline_items SET status = 'failed', updated_at = now() WHERE id = %s",
+                (item_id,),
+            )
+        elif screened_out:
+            self.cursor.execute(
+                """
+                UPDATE pipeline_item_stages
+                SET status = 'skipped', metrics = %s, finished_at = now(), updated_at = now()
+                WHERE pipeline_item_id = %s AND stage = 'extract_features' AND status = 'pending'
+                """,
+                (psycopg2.extras.Json({"decision": "no_use", "reason": "Publication screened out."}), item_id),
+            )
+            self.cursor.execute(
+                "UPDATE pipeline_items SET status = 'successful', updated_at = now() WHERE id = %s",
                 (item_id,),
             )
         elif next_stage := self._next_stage(stage_value):
@@ -286,7 +317,8 @@ class PipelineItemRepositoryMixin:
             SELECT
                 COUNT(*) FILTER (WHERE pis.status = 'failed') AS failed,
                 COUNT(*) FILTER (WHERE pis.status = 'interrupted') AS interrupted,
-                COUNT(*) FILTER (WHERE pis.status = 'skipped') AS skipped
+                COUNT(*) FILTER (WHERE pis.status = 'skipped'
+                    AND pis.metrics->>'decision' IS DISTINCT FROM 'no_use') AS skipped
             FROM pipeline_item_stages pis
             JOIN pipeline_items pi ON pi.id = pis.pipeline_item_id
             WHERE pi.pipeline_run_id = %s

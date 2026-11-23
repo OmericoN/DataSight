@@ -325,7 +325,7 @@ def test_evaluation_queries_are_strictly_run_scoped_and_include_zero_result_pape
     candidate_query, candidate_params = cursor.executed[-1]
     assert "dc.pipeline_run_id = %s" in paper_query
     assert "dc.included" in paper_query
-    assert paper_params == ("rules-v3", 9)
+    assert paper_params == ("rules-v3", "dataset-use-model-v1", "rules-v3", 9)
     assert "dr.render_sha256 = md.sha256" in candidate_query
     assert "dr.status = 'successful'" in candidate_query
     assert candidate_params == ("rules-v3", 9)
