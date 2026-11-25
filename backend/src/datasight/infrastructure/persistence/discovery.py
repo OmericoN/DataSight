@@ -8,6 +8,8 @@ from typing import Any
 
 import psycopg2.extras
 
+from datasight.domain.candidate_detection import SCREENING_VERSION
+
 
 def scope_to_preview_candidates(
     query: str,
@@ -24,6 +26,10 @@ def scope_to_preview_candidates(
                 WHERE pr.id = %s
                   AND (NULLIF(pr.config->>'preview_id', '') IS NOT NULL OR EXISTS (
                       SELECT 1 FROM discovery_candidates selected WHERE selected.pipeline_run_id=pr.id
+                  ) OR EXISTS (
+                      SELECT 1 FROM stage_runs sr
+                      WHERE sr.pipeline_run_id=pr.id AND sr.publication_id IS NULL
+                        AND sr.stage='discover' AND sr.metrics->'payload' ? 'paper_ids'
                   ))
             )
             OR EXISTS (
@@ -33,14 +39,54 @@ def scope_to_preview_candidates(
                   AND dc.included
                   AND dc.pipeline_ready
             )
+            OR EXISTS (
+                SELECT 1 FROM stage_runs sr
+                JOIN pipeline_runs pr ON pr.id=sr.pipeline_run_id
+                WHERE sr.pipeline_run_id=%s AND sr.publication_id IS NULL AND sr.stage='discover'
+                  AND NULLIF(pr.config->>'preview_id', '') IS NULL
+                  AND sr.metrics->'payload'->'paper_ids' ? p.paper_id
+            )
         )
     """
-    return query, [*params, pipeline_run_id, pipeline_run_id]
+    return query, [*params, pipeline_run_id, pipeline_run_id, pipeline_run_id]
 
 
 class DiscoveryRepositoryMixin:
     conn: Any
     cursor: Any
+
+    def processed_discovery_paper_ids(
+        self, paper_ids: Iterable[str], pipeline_run_id: int | None = None,
+    ) -> set[str]:
+        """Find completed extractions and terminal screening decisions for discovery hits."""
+        ids = sorted(set(paper_ids) - {""})
+        if not ids:
+            return set()
+        self.cursor.execute(
+            """
+            SELECT p.paper_id
+            FROM publications p
+            WHERE p.paper_id = ANY(%s)
+              AND (
+                  EXISTS (
+                      SELECT 1 FROM publication_extractions e
+                      WHERE e.publication_id=p.id AND e.status='successful'
+                        AND e.pipeline_run_id IS DISTINCT FROM %s
+                  )
+                  OR (
+                      SELECT dr.metrics->>'decision'
+                      FROM mention_detection_runs dr
+                      JOIN artifacts a ON a.id=dr.markdown_artifact_id AND a.sha256=dr.render_sha256
+                      WHERE dr.publication_id=p.id AND dr.status='successful'
+                        AND dr.detector_version=%s
+                      ORDER BY dr.completed_at DESC NULLS LAST, dr.id DESC
+                      LIMIT 1
+                  ) = 'no_use'
+              )
+            """,
+            (ids, pipeline_run_id, SCREENING_VERSION),
+        )
+        return {row["paper_id"] for row in self.cursor.fetchall()}
 
     def save_discovery_preview(
         self,

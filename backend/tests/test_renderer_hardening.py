@@ -113,6 +113,31 @@ def test_pruned_retains_dataset_back_matter_references_and_split_links(tmp_path:
     assert "{#uncited} Beta cohort archive, release 2." in text
 
 
+def test_renderer_preserves_misparsed_appendix_rows_outside_the_bibliography(tmp_path: Path):
+    xml = tmp_path / "paper.tei.xml"
+    xml.write_text("""<TEI xmlns="http://www.tei-c.org/ns/1.0"><text>
+      <body><p>We used Alpha and cite <ref type="bibr" target="#article">[1]</ref>.</p>
+        <table><row><cell>Dataset</cell></row><row><cell>Alpha</cell></row></table></body>
+      <back>
+        <listBibl>
+          <biblStruct xml:id="article"><monogr><title>Actual article</title></monogr></biblStruct>
+          <biblStruct xml:id="caption"><analytic><title>Table A1. Overview of the 120 datasets used for model training</title></analytic></biblStruct>
+          <biblStruct xml:id="row"><monogr><title>El</title><ptr target="https://zenodo.org/records/1234"/></monogr><note>Two merged rows</note></biblStruct>
+        </listBibl>
+        <listBibl><biblStruct xml:id="deposit"><monogr><title>Data From Alpha</title>
+          <idno type="DOI">10.1234/alpha</idno></monogr></biblStruct></listBibl>
+      </back></text></TEI>""", encoding="utf-8")
+    text, metrics, warnings = renderer._render_document(xml, "pruned", renderer.RENDERER_VERSION)
+    references, appendix = text.split(renderer.UNPARSED_TABLE_HEADING)
+    assert "[1]{#article}" in references and "{#deposit}" in references
+    assert "| Alpha |" in references and "{#row}" not in references
+    assert "{#caption}" in appendix and "{#row}" in appendix
+    assert "Two merged rows" in appendix and "https://zenodo.org/records/1234" in appendix
+    assert metrics["unparsed_appendix_table_fragments"] == 2
+    assert any("GROBID" in warning for warning in warnings)
+    assert renderer.UNPARSED_TABLE_HEADING not in extract_markdown(xml, version=renderer.PREVIOUS_RENDERER_VERSION)
+
+
 def test_renderer_versions_and_profiles_keep_distinct_default_artifacts(tmp_path: Path, monkeypatch):
     xml = tmp_path / "paper.tei.xml"
     xml.write_text(_tei(), encoding="utf-8")

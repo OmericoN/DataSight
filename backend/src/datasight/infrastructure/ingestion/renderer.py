@@ -23,6 +23,10 @@ TEI = "http://www.tei-c.org/ns/1.0"
 XML = "http://www.w3.org/XML/1998/namespace"
 NS = {"t": TEI}
 LEGACY_RENDERER_VERSION = "tei-renderer-v6"
+PREVIOUS_RENDERER_VERSION = "tei-renderer-v7"
+RENDERER_VERSIONS = (RENDERER_VERSION, PREVIOUS_RENDERER_VERSION, LEGACY_RENDERER_VERSION)
+UNPARSED_TABLE_HEADING = "## Unparsed appendix table material"
+UNPARSED_TABLE_PREFIX = "> "
 RenderProfile = Literal["full_body", "pruned"]
 DEFAULT_RENDER_PROFILE: RenderProfile = "pruned"
 logger = logging.getLogger(__name__)
@@ -52,6 +56,11 @@ PRUNED_HEADINGS = re.compile(
 DELIMITED_LINKS = re.compile(r"\[(https?://[^\[\]]{1,2000})\]|<(https?://[^<>]{1,2000})>", re.I)
 LINK_SEPARATOR = re.compile(r"[,;]\s*(?=https?://)", re.I)
 DOI_HOSTS = {"doi.org", "dx.doi.org"}
+DATASET_INVENTORY_CAPTION = re.compile(
+    r"^Table\s+[A-Z]\.?\d+[a-z]?\s*[.:]\s*(?:Overview|List|Summary|Inventory)\s+of\b"
+    r"[^.]{0,240}\bdatasets?\b[^.]{0,240}\b(?:training|evaluation|testing|validation|benchmarking)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -170,6 +179,7 @@ def _parse_references(root: etree._Element, *, legacy: bool) -> dict[str, dict[s
             "urls": urls,
             "label": label,
             "raw": " ".join(_clean_text(" ".join(bib.itertext())).split()),
+            "list": bib.getparent(),
         }
     return references
 
@@ -306,7 +316,7 @@ def _render_element(element: etree._Element, state: _RenderState, depth: int = 0
 
 
 def _render_document(xml_path: str | Path, profile: RenderProfile, version: str) -> tuple[str, dict[str, Any], list[str]]:
-    if version not in {RENDERER_VERSION, LEGACY_RENDERER_VERSION}:
+    if version not in RENDERER_VERSIONS:
         raise ValueError(f"Unsupported Markdown renderer version: {version}")
     legacy = version == LEGACY_RENDERER_VERSION
     validate_tei(xml_path)
@@ -356,8 +366,10 @@ def _render_document(xml_path: str | Path, profile: RenderProfile, version: str)
             chunks.append(f"[^{number}]: {state.footnotes[footnote_id]}\n\n")
 
     reference_ids = state.cited_refs if legacy and profile == "pruned" else set(state.references)
+    unparsed_tables = []
     if reference_ids:
         chunks.append("\n\n---\n\n## References\n\n")
+        table_lists = set()
         for ref_id in state.references:
             if ref_id not in reference_ids:
                 continue
@@ -365,8 +377,18 @@ def _render_document(xml_path: str | Path, profile: RenderProfile, version: str)
             authors_text = ", ".join(ref["authors"]) or "Unknown"
             links = "".join(f" DOI: https://doi.org/{doi}" for doi in ref["dois"] if doi)
             links += "".join(f" URL: {url}" for url in ref["urls"] if url)
+            if version == RENDERER_VERSION:
+                if DATASET_INVENTORY_CAPTION.match(ref["title"] or ref["raw"]):
+                    table_lists.add(ref["list"])
+                if ref["list"] in table_lists:
+                    unparsed_tables.append(f"{UNPARSED_TABLE_PREFIX}{{#{ref_id}}} {ref['raw']}{links}\n\n")
+                    continue
             reference_text = ref["raw"] if profile == "full_body" or (not legacy and not ref["title"]) else f"{authors_text} ({ref['year']}). {ref['title']}."
             chunks.append(f"- **[{ref['label']}]** {{#{ref_id}}} {reference_text}{links}\n\n")
+    if unparsed_tables:
+        chunks.append(f"\n\n---\n\n{UNPARSED_TABLE_HEADING}\n\n")
+        chunks.extend(unparsed_tables)
+        state.warnings.append("GROBID placed appendix table fragments in the bibliography. Review the source table for dataset rows.")
 
     markdown = "".join(chunks).replace("\r\n", "\n")
     if not legacy:
@@ -383,8 +405,10 @@ def _render_document(xml_path: str | Path, profile: RenderProfile, version: str)
         "tables": state.tables,
         "body_characters": body_characters,
         "rendered_characters": len(markdown),
-        "references": len(reference_ids),
+        "references": len(reference_ids) - len(unparsed_tables),
     }
+    if version == RENDERER_VERSION:
+        metrics["unparsed_appendix_table_fragments"] = len(unparsed_tables)
     if profile == "pruned":
         state.warnings.append("Pruned profile omits sections and is not canonical for evaluation")
     return markdown, metrics, state.warnings

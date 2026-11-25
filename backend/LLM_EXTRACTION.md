@@ -56,7 +56,15 @@ matter, including dataset methods and availability, alongside compact references
 It stores renders by version and profile, and extraction freezes the same
 Markdown hash that passed mention detection.
 
-New runs use `catalog-v5`. It plans contiguous source chunks up to 16,000
+New runs use `catalog-v6` and `tei-renderer-v8`. The renderer flags dataset
+inventory fragments that GROBID places in bibliography entries and preserves
+them under **Unparsed appendix table material** for inspection against the PDF.
+The extractor excludes that section and ordinary bibliography entries from
+inference. A standalone bibliography candidate requires a specific name and a
+validated dataset link or identifier. Explicit deposits can still support
+datasets identified elsewhere in the source.
+
+The extractor plans contiguous source chunks up to 16,000
 characters, then checks each serialized request with the pinned tokenizer.
 Catalog extraction sends one chunk at a time and checkpoints each validated response.
 Truncated, incomplete, or ungrounded scans can be subdivided up to three levels

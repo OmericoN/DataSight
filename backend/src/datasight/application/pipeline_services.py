@@ -36,7 +36,7 @@ from datasight.infrastructure.ingestion.renderer import (
     render_to_markdown,
 )
 from datasight.infrastructure.persistence.repository import PipelineRepository
-from datasight.infrastructure.pubfetcher.openalex import OpenAlexClient
+from datasight.infrastructure.pubfetcher.openalex import OpenAlexClient, openalex_work_id
 from datasight.matching.um_matcher import UMCatalogMatcher
 from datasight.domain.candidate_detection import DETECTOR_VERSION, SCREENING_VERSION
 from datasight.infrastructure.llm.client import GatewayClient
@@ -79,13 +79,15 @@ def discover_publications(
             processing_limit=processing_limit or limit,
             excluded_candidate_ids=excluded_candidate_ids,
         )
+        processed_skipped = materialized["processed_skipped"]
         result = _stage_result(
             PipelineStage.DISCOVER,
             "successful" if materialized["paper_ids"] else "skipped",
             int(materialized["persisted"]),
             (
-                f"Retained {materialized['candidate_count']} discovery candidates and "
-                f"queued {materialized['included']} papers with an OpenAlex PDF URL."
+                f"Filled {materialized['candidate_count']} of {materialized['discovery_limit']} candidate pool slots "
+                f"and queued {materialized['included']} of {materialized['processing_limit']} requested papers."
+                + (f" Skipped {processed_skipped} previously processed publications." if processed_skipped else "")
             ),
             materialized,
         )
@@ -162,17 +164,25 @@ def discover_publications(
                     reason="source_paper_citation",
                     seed_work_ids=batch,
                 ))
-        papers = dedupe_and_score_publications(fetched, query, options, profile)[:limit]
+        ranked = dedupe_and_score_publications(fetched, query, options, profile)
+        ranked_ids = [openalex_work_id(paper.get("paperId") or paper.get("id")) for paper in ranked]
+        processed_ids = repo.processed_discovery_paper_ids(ranked_ids, pipeline_run_id)
+        papers = [
+            paper for paper, paper_id in zip(ranked, ranked_ids, strict=True)
+            if paper_id not in processed_ids
+        ][:limit]
         inserted = repo.upsert_publications(papers, source="openalex")
         result = _stage_result(
             PipelineStage.DISCOVER,
             "successful" if papers else "skipped",
             inserted,
-            f"Discovered {len(papers)} publications.",
+            f"Discovered {len(papers)} publications."
+            + (f" Skipped {len(processed_ids)} previously processed publications." if processed_ids else ""),
             {
                 "query": query,
                 "provider": "openalex",
                 "fetched": len(papers),
+                "processed_skipped": len(processed_ids),
                 "openalex_queries": query_payloads,
                 "use_um_profile": use_um_profile,
                 "paper_ids": [

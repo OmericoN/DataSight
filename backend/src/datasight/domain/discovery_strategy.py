@@ -436,6 +436,16 @@ def structured_direct_dataset_ids(work: Mapping[str, Any], query: StrategyQuery)
     return tuple(sorted(matched))
 
 
+def eligible_discovery_work(work: Mapping[str, Any], paper_id: str, known_ids: set[str]) -> bool:
+    raw = work.get("raw") if isinstance(work.get("raw"), Mapping) else work
+    publication_type = str(work.get("publication_type") or raw.get("type") or "")
+    return bool(
+        paper_id and paper_id not in known_ids
+        and not (work.get("is_retracted") or raw.get("is_retracted"))
+        and publication_type not in {"dataset", "paratext"}
+    )
+
+
 def rank_strategy_candidates(
     publications: Iterable[Mapping[str, Any]],
     known_dataset_ids: Sequence[str],
@@ -449,13 +459,10 @@ def rank_strategy_candidates(
 
     for item in publications:
         paper_id = _id_tail(item.get("paperId") or item.get("id"))
-        if not paper_id or paper_id in known_ids:
+        if not eligible_discovery_work(item, paper_id, known_ids):
             continue
         raw = item.get("raw") if isinstance(item.get("raw"), Mapping) else item
         raw_mapping = raw if isinstance(raw, Mapping) else {}
-        publication_type = str(item.get("publication_type") or raw_mapping.get("type") or "")
-        if item.get("is_retracted") or raw_mapping.get("is_retracted") or publication_type in {"dataset", "paratext"}:
-            continue
         reasons = {
             EvidenceReason(reason)
             for reason in item.get("discovery_reasons") or []
@@ -517,16 +524,7 @@ def rank_strategy_candidates(
         candidate["evidence_tier"] = tier.value
         candidate["candidate_strength"] = strength
 
-    ranked = sorted(best.values(), key=_candidate_sort_key)
-    ready = [candidate for candidate in ranked if candidate["pipeline_ready"]]
-    reserved_ids = {candidate["paper_id"] for candidate in ready[:processing_limit]}
-    cap = discovery_limit if discovery_limit is not None else len(ranked)
-    retained_ids = set(reserved_ids)
-    for candidate in ranked:
-        if len(retained_ids) >= cap:
-            break
-        retained_ids.add(candidate["paper_id"])
-    retained = [candidate for candidate in ranked if candidate["paper_id"] in retained_ids]
+    retained = sorted(best.values(), key=_candidate_sort_key)[:discovery_limit]
 
     included = 0
     for candidate in retained:

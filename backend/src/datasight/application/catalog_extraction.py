@@ -1,5 +1,6 @@
 """Plan budgeted source chunks and extract grounded dataset candidates."""
 
+import re
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from datasight import config
 from datasight.application.extraction_engine import consolidate
 from datasight.application.catalog_features import CATALOG_PROMPT, ROLE_PROMPT, CatalogChunkResponse, CatalogUseChunkResponse, attach_catalog_facts, has_deposit_marker
 from datasight.application.catalog_candidate_resolution import refine_candidates
-from datasight.application.catalog_identity import has_explicit_deposit_citation, reconcile_catalog_identity
+from datasight.application.catalog_identity import has_catalog_deposit_link, has_explicit_deposit_citation, reconcile_catalog_identity
 from datasight.application.whole_document_extraction import (
     CandidateGroup,
     LOCATE_GROUPS,
@@ -21,20 +22,23 @@ from datasight.application.whole_document_extraction import (
     saved_completion,
 )
 from datasight.domain.extraction import PublicationExtraction, StrictModel
+from datasight.infrastructure.ingestion.renderer import UNPARSED_TABLE_HEADING
 from datasight.infrastructure.llm.client import (
     MAX_PROMPT_CHARS, GatewayClient, InferenceError, InferenceUnavailable, InvalidCompletion,
     OutputTruncated, RequestTooLarge, payload_for, prompt_character_count,
 )
 
-PROMPT_VERSION = "catalog-v5"
+PROMPT_VERSION = "catalog-v6"
+CATALOG_V5 = "catalog-v5"
 CATALOG_V4 = "catalog-v4"
 PREVIOUS_CATALOG_V4 = "fast-catalog-v4"
 CATALOG_V3 = "fast-catalog-v3"
 CANDIDATE_PROMPT_VERSION = "fast-candidates-v2"
 LEGACY_PROMPT_VERSION = "fast-candidates-v1"
 CATALOG_PROMPT_VERSIONS = (
-    PROMPT_VERSION, CATALOG_V4, PREVIOUS_CATALOG_V4, CATALOG_V3, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION,
+    PROMPT_VERSION, CATALOG_V5, CATALOG_V4, PREVIOUS_CATALOG_V4, CATALOG_V3, CANDIDATE_PROMPT_VERSION, LEGACY_PROMPT_VERSION,
 )
+CATALOG_SPLIT_VERSIONS = {PROMPT_VERSION, CATALOG_V5}
 CATALOG_TARGET_CHARS = 16_000
 CATALOG_SPLIT_DEPTH = 3
 MATCHING_PROMPT = ROLE_PROMPT + """
@@ -44,6 +48,15 @@ collection links and explicit data citations priority. A phrase describing multi
 not an alias. Pair each link and citation with its own dataset. Leave a fact out if the line does
 not establish the association. A cited study's use never establishes use by this publication.
 """
+GROUNDED_MATCHING_PROMPT = MATCHING_PROMPT + """
+The supplied lines may have gaps in their numbering. Review only the supplied lines.
+If there are no datasets in them, return {"c":true,"g":[]}.
+Bibliography lines are supplied only for possible data deposits. Emit a standalone
+bibliography group only for a specific named deposit with its own dataset URL or identifier.
+Group repeated descriptions with a named dataset only when the source explicitly links them.
+"""
+SECTION_HEADING = re.compile(r"(?m)^#{1,6}[ \t]+([^\r\n]+)")
+UNPARSED_TABLE_SECTION = UNPARSED_TABLE_HEADING.removeprefix("## ").casefold()
 LOCATE_CHUNK = LOCATE_GROUPS.replace("entire publication", "entire supplied source segment")
 LOCATE_COMPACT = LOCATE_CHUNK.replace("Set complete", "Set c").replace("set complete", "set c") + """
 Return c for scan completion and g for groups. Each group is [name or null,
@@ -74,7 +87,8 @@ class CompactChunkResponse(StrictModel):
 
 
 FORMATS = {
-    PROMPT_VERSION: (CatalogUseChunkResponse, MATCHING_PROMPT, ":catalog-use-v5"),
+    PROMPT_VERSION: (CatalogUseChunkResponse, GROUNDED_MATCHING_PROMPT, ":catalog-use-v6"),
+    CATALOG_V5: (CatalogUseChunkResponse, MATCHING_PROMPT, ":catalog-use-v5"),
     CATALOG_V4: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
     PREVIOUS_CATALOG_V4: (CatalogUseChunkResponse, ROLE_PROMPT, ":catalog-use"),
     CATALOG_V3: (CatalogChunkResponse, CATALOG_PROMPT, ":catalog"),
@@ -90,22 +104,50 @@ class Chunk:
     lines: list[str]
     payload: dict[str, Any]
     prompt_version: str = LEGACY_PROMPT_VERSION
+    scan_line_ids: frozenset[int] | None = None
 
     @property
     def key(self) -> str:
-        prefix = "catalog" if self.prompt_version in {PROMPT_VERSION, CATALOG_V4} else "fast"
+        prefix = "catalog" if self.prompt_version in {PROMPT_VERSION, CATALOG_V5, CATALOG_V4} else "fast"
         return f"{prefix}:{self.start}:{self.end}" + FORMATS[self.prompt_version][2]
+
+
+def _scan_lines(text: str, start: int, lines: list[str]) -> list[tuple[int, str]]:
+    heading = ""
+    if start:
+        for match in SECTION_HEADING.finditer(text, 0, start):
+            heading = match[1].strip().casefold()
+    selected = []
+    offset = start
+    for i, line in enumerate(lines, 1):
+        starts_line = offset == 0 or text[offset - 1] in "\n\r"
+        offset += len(line)
+        ends_line = line.endswith(("\n", "\r")) or offset == len(text) or text[offset] in "\n\r"
+        if starts_line and ends_line and (match := SECTION_HEADING.match(line)):
+            heading = match[1].strip().casefold()
+            if heading in {"references", UNPARSED_TABLE_SECTION}:
+                continue
+        if not line.strip() or heading == UNPARSED_TABLE_SECTION:
+            continue
+        if heading == "references" and not (starts_line and ends_line and has_catalog_deposit_link(line)):
+            continue
+        selected.append((i, line))
+    return selected
 
 
 def make_chunk(text: str, start: int, end: int, max_prompt_chars: int, *, prompt_version: str = LEGACY_PROMPT_VERSION) -> Chunk:
     lines = text[start:end].splitlines(keepends=True)
     model, instruction, _ = FORMATS[prompt_version]
-    data: dict[str, Any] = {"lines": list(enumerate(lines, 1))}
+    selected = _scan_lines(text, start, lines) if prompt_version == PROMPT_VERSION else list(enumerate(lines, 1))
+    scan_line_ids = frozenset(i for i, _ in selected) if prompt_version == PROMPT_VERSION else None
+    if scan_line_ids == frozenset():
+        return Chunk(start, end, lines, {}, prompt_version, scan_line_ids)
+    data: dict[str, Any] = {"lines": selected}
     if issubclass(model, CatalogChunkResponse):
         deposits = [
             i for i, line in data["lines"] if line.startswith("- **[")
             and ("DOI:" in line or "URL:" in line)
-            and (has_deposit_marker(line) or (prompt_version == PROMPT_VERSION and has_explicit_deposit_citation(line)))
+            and (has_deposit_marker(line) or (prompt_version in CATALOG_SPLIT_VERSIONS and has_explicit_deposit_citation(line)))
         ]
         if deposits:
             data["possible_data_deposit_lines"] = deposits
@@ -114,7 +156,7 @@ def make_chunk(text: str, start: int, end: int, max_prompt_chars: int, *, prompt
         instruction, data, model,
         max_prompt_chars=max_prompt_chars,
     )
-    return Chunk(start, end, lines, payload, prompt_version)
+    return Chunk(start, end, lines, payload, prompt_version, scan_line_ids)
 
 
 def preferred_end(text: str, start: int, end: int) -> int:
@@ -129,7 +171,7 @@ def preferred_end(text: str, start: int, end: int) -> int:
 
 
 def plan_chunks(text: str, start: int, stop: int, max_prompt_chars: int, *, prompt_version: str = LEGACY_PROMPT_VERSION) -> list[Chunk]:
-    target = min(max_prompt_chars, CATALOG_TARGET_CHARS) if prompt_version == PROMPT_VERSION else max_prompt_chars
+    target = min(max_prompt_chars, CATALOG_TARGET_CHARS) if prompt_version in CATALOG_SPLIT_VERSIONS else max_prompt_chars
     if start == stop:
         return [make_chunk(text, start, stop, max_prompt_chars, prompt_version=prompt_version)]
     chunks = []
@@ -164,9 +206,16 @@ def plan_chunks(text: str, start: int, stop: int, max_prompt_chars: int, *, prom
 def ground_chunk(text: str, chunk: Chunk, response: WholeDocumentResponse | CompactChunkResponse | CatalogChunkResponse) -> dict[str, Any]:
     if isinstance(response, CatalogChunkResponse):
         blank_lines = {i for i, line in enumerate(chunk.lines, 1) if not line.strip()}
+        excluded_lines = (
+            set(range(1, len(chunk.lines) + 1)) - chunk.scan_line_ids
+            if chunk.scan_line_ids is not None else set()
+        )
+        ignored_lines = blank_lines | excluded_lines
         response = response.model_copy(update={"g": [
-            (name, uncertain, [i for i in ids if i not in blank_lines], facts)
+            (name, uncertain, [i for i in ids if i not in ignored_lines],
+             [fact for fact in facts if fact[1] not in excluded_lines])
             for name, uncertain, ids, facts in response.g
+            if not ids or any(i not in excluded_lines for i in ids)
         ]})
     scan = response if isinstance(response, WholeDocumentResponse) else response.expand()
     if not scan.complete:
@@ -179,7 +228,7 @@ def ground_chunk(text: str, chunk: Chunk, response: WholeDocumentResponse | Comp
     if isinstance(response, CatalogChunkResponse):
         attach_catalog_facts(
             response, groups, {item.evidence_id: item for item in evidence},
-            recover_fields=chunk.prompt_version == PROMPT_VERSION,
+            recover_fields=chunk.prompt_version in CATALOG_SPLIT_VERSIONS,
         )
     return {"groups": groups, "evidence": [item.model_dump(mode="json") for item in evidence]}
 
@@ -197,7 +246,7 @@ def scan_chunk(
         max_prompt_chars = min(max_prompt_chars, saved_limit)
     if prompt_character_count(chunk.payload["messages"]) > max_prompt_chars:
         raise RequestTooLarge("Prompt exceeds the gateway character limit", max_prompt_chars=max_prompt_chars)
-    current = chunk.prompt_version == PROMPT_VERSION
+    current = chunk.prompt_version in CATALOG_SPLIT_VERSIONS
     if current and saved_failure.get("reason") in {"output_truncated", "invalid_scan"} and split_depth < CATALOG_SPLIT_DEPTH:
         raise SavedSplitRequired(checkpoint.get("error") or "Saved incomplete scan")
     if not current and checkpoint and checkpoint.get("error") == INCOMPLETE_SCAN and split_depth < 2:
@@ -288,6 +337,12 @@ def run_catalog_extraction(
     progress()
     while pending:
         chunk, split_depth = pending.popleft()
+        if not chunk.payload:
+            covered += chunk.end - chunk.start
+            planned_chunks -= 1
+            call_limit -= 1
+            progress()
+            continue
         attempts_before = attempts
         try:
             result = scan_chunk(repo, client, extraction_id, text, chunk, split_depth, max_prompt_chars, record_attempt)
@@ -306,7 +361,7 @@ def run_catalog_extraction(
             planned_chunks += len(replacements) - 1
             call_limit += len(replacements) - int(attempts == attempts_before)
         except (OutputTruncated, InvalidCompletion) as exc:
-            if prompt_version == PROMPT_VERSION:
+            if prompt_version in CATALOG_SPLIT_VERSIONS:
                 can_split = split_depth < CATALOG_SPLIT_DEPTH
             else:
                 can_split = isinstance(exc, (OutputTruncated, IncompleteScan)) and (
@@ -344,8 +399,17 @@ def run_catalog_extraction(
         raise ValueError(f"Catalog extraction incomplete. {len(errors)} of {planned_chunks} chunks failed. {errors[0]}")
     if covered != len(text):
         raise ValueError("Catalog extraction incomplete. Source coverage has a gap.")
-    if prompt_version == PROMPT_VERSION:
+    if prompt_version in CATALOG_SPLIT_VERSIONS:
         reconcile_catalog_identity(text, groups, evidence)
+    if prompt_version == PROMPT_VERSION:
+        groups = [
+            group for group in groups
+            if not group["bibliography_only"] or (
+                group["name"] and not group["identity_uncertain"]
+                and any(group["identity"].get(field, {}).get("state") == "reported"
+                        for field in ("identifiers", "urls"))
+            )
+        ]
     blocked = refine_candidates(text, groups, evidence) if compact else set()
     result = publication_result({
         "status": "complete", "paper_id": paper_id, "source_sha256": source_sha256,

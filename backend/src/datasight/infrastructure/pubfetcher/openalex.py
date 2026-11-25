@@ -82,6 +82,7 @@ class OpenAlexSearchResult:
     calls: int
     rate_limit: dict[str, str]
     truncated: bool = False
+    next_cursor: str | None = None
 
 
 class OpenAlexClient:
@@ -160,6 +161,7 @@ class OpenAlexClient:
             calls=int(raw["calls"]),
             rate_limit=dict(raw["rate_limit"]),
             truncated=bool(raw["truncated"]),
+            next_cursor=raw.get("next_cursor"),
         )
 
     def get_work(
@@ -261,6 +263,7 @@ class OpenAlexClient:
                 "calls": 0,
                 "rate_limit": {},
                 "truncated": False,
+                "next_cursor": None,
             }
         if search_mode not in {"search", "search.exact", "search.semantic"}:
             raise ValueError(f"Unsupported OpenAlex search mode: {search_mode}")
@@ -340,7 +343,7 @@ class OpenAlexClient:
                     break
             else:
                 results.extend(page_results)
-                next_cursor = page_meta.get("next_cursor")
+                next_cursor = page_meta.get("next_cursor") if page_results else None
             if max_cost_usd is not None and cost_usd >= max_cost_usd:
                 truncated = len(results) < result_limit
                 break
@@ -357,6 +360,7 @@ class OpenAlexClient:
             "cost_usd": round(cost_usd, 6),
             "calls": calls,
             "rate_limit": rate_limit,
+            "next_cursor": next_cursor if not sampling else None,
             "truncated": truncated or (
                 not sampling and bool(next_cursor and len(results) >= limit)
             ),

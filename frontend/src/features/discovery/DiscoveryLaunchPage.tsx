@@ -96,6 +96,9 @@ export default function DiscoveryLaunchPage() {
     previewMutation.data !== undefined &&
     JSON.stringify(previewMutation.variables) === JSON.stringify(previewRequest);
   const preview = previewIsCurrent ? previewMutation.data : undefined;
+  const queuedCandidates = preview?.candidates
+    .filter((candidate) => candidate.pipeline_ready && !excludedIds.has(candidate.paper_id))
+    .slice(0, processingLimit) ?? [];
   const profile = profileQuery.data;
   const openAlex = statusQuery.data;
   const blocked = !openAlex?.available || (mode === "catalog_funnel" && !profile?.dataset_count);
@@ -191,12 +194,12 @@ export default function DiscoveryLaunchPage() {
             <div className="grid gap-x-4 gap-y-3 @xs:grid-cols-2">
               <LabeledInput
                 label={mode === "random" ? "Random sample size" : "Candidate pool cap"}
-                hint={mode === "random" ? "Works drawn uniformly from OpenAlex before eligibility checks." : "Maximum retained candidates, including watchlist leads."}
+                hint="Eligible publications to collect after skipping previously processed papers. Includes papers without PDF links."
                 type="number" min={1} max={1000} value={discoveryLimit} onChange={(event) => setDiscoveryLimit(Number(event.target.value))}
               />
               <LabeledInput
                 label="Process now"
-                hint={mode === "random" ? "Works with a PDF URL, taken in the sample's random order." : "Discovery stops at this PDF-link target. Links are validated during download."}
+                hint={mode === "random" ? "Select papers with a PDF link from the completed pool in seeded random order." : "Select the highest-ranked papers with a PDF link from the completed pool."}
                 type="number" min={1} max={discoveryLimit} value={processingLimit} onChange={(event) => setProcessingLimit(Math.min(Number(event.target.value), discoveryLimit))}
               />
               {mode === "catalog_funnel" ? <LabeledInput className="@xs:col-span-2" label="Optional focus" hint="Applies to the final topic and keyword search." placeholder="e.g. health, education, FAIR data" value={focusQuery} onChange={(event) => setFocusQuery(event.target.value)} /> : null}
@@ -245,7 +248,7 @@ export default function DiscoveryLaunchPage() {
           blocked={blocked || manualMissing}
           estimatedCalls={mode === "catalog_funnel" ? estimatedCalls : simpleModeCalls}
           estimatedCost={mode === "catalog_funnel" ? estimatedCost : simpleModeCalls * (mode === "manual" ? 0.001 : 0.0001)}
-          excluded={excludedIds.size}
+          queued={queuedCandidates.length}
           loading={previewMutation.isPending}
           preview={preview}
           mode={mode}
@@ -257,7 +260,7 @@ export default function DiscoveryLaunchPage() {
       {preview ? (
         <>
           <PhaseResults mode={mode} preview={preview} />
-          <CandidatePreview mode={mode} previewId={preview.preview_id} candidates={preview.candidates} excludedIds={excludedIds} onSelect={setSelectedCandidate} onToggle={toggleCandidate} total={preview.candidate_count} />
+          <CandidatePreview mode={mode} previewId={preview.preview_id} candidates={preview.candidates} queuedCandidates={queuedCandidates} excludedIds={excludedIds} onSelect={setSelectedCandidate} onToggle={toggleCandidate} total={preview.candidate_count} />
         </>
       ) : null}
 
@@ -306,7 +309,7 @@ function StrategySelector({ mode, onChange }: { mode: DiscoveryMode; onChange: (
   );
 }
 
-function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loading, mode, preview, onPreview }: { blocked: boolean; estimatedCalls: number | undefined; estimatedCost: number | undefined; excluded: number; loading: boolean; mode: DiscoveryMode; preview: Awaited<ReturnType<typeof api.discoveryPreview>> | undefined; onPreview: () => void }) {
+function StrategySummary({ blocked, estimatedCalls, estimatedCost, queued, loading, mode, preview, onPreview }: { blocked: boolean; estimatedCalls: number | undefined; estimatedCost: number | undefined; queued: number; loading: boolean; mode: DiscoveryMode; preview: Awaited<ReturnType<typeof api.discoveryPreview>> | undefined; onPreview: () => void }) {
   return (
     <section aria-labelledby="preview-heading" className="activity-surface grid gap-4 bg-card p-5 text-card-foreground @4xl:sticky @4xl:top-22">
       <div className="flex items-center gap-1">
@@ -327,8 +330,9 @@ function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loa
         {preview ? (
           <div className="grid gap-2 border-t pt-2">
             <SummaryLine label="Candidates retained" value={String(preview.candidate_count)} />
+            {Number(preview.metrics.unique_processed_works_skipped) > 0 ? <SummaryLine label="Previously processed papers skipped" value={String(preview.metrics.unique_processed_works_skipped)} /> : null}
             <SummaryLine label="Candidates with PDF URL" value={String(preview.ready_count)} />
-            <SummaryLine label="Processing queue" value={String(Math.max(0, preview.included_count - excluded))} />
+            <SummaryLine label="Processing queue" value={String(queued)} />
             <SummaryLine label="No-PDF-URL watchlist" value={String(preview.watchlist_count)} />
             <SummaryLine label="Stopped because" value={formatText(preview.stop_reason)} />
             <SummaryLine label="Actual cost" value={`$${preview.actual_cost_usd.toFixed(4)}`} />
@@ -336,7 +340,11 @@ function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loa
           </div>
         ) : null}
       </div>
-      {preview?.partial ? <p className="text-xs text-status-warning">This is a partial preview. Check its warnings before launching.</p> : null}
+      {preview?.warnings.length ? (
+        <ul className="list-disc space-y-1 pl-4 text-xs text-status-warning">
+          {preview.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+        </ul>
+      ) : null}
       <Button type="button" variant="ghost" className="app-glass rounded-full border-(--glass-edge) text-blue-ink" onClick={onPreview} disabled={blocked || loading}>
         {loading ? "Previewing results…" : preview ? "Refresh results" : "Preview results"}
       </Button>
@@ -346,7 +354,7 @@ function StrategySummary({ blocked, estimatedCalls, estimatedCost, excluded, loa
 
 function PhaseResults({ mode, preview }: { mode: DiscoveryMode; preview: Awaited<ReturnType<typeof api.discoveryPreview>> }) {
   const title = mode === "random" ? "Sampling execution" : mode === "manual" ? "Query execution" : "Funnel execution";
-  const description = mode === "random" ? "OpenAlex drew the requested seeded sample across the selected year and publication-type scope." : mode === "manual" ? "The manual query ran through the shared budget and review controls." : "Later phases run only when earlier evidence has not filled the PDF-link target.";
+  const description = mode === "random" ? "Seeded draws fill the pool with eligible papers that match your filters." : mode === "manual" ? "Discovery pages through the query results to fill the eligible candidate pool." : "Later phases run when the eligible candidate pool still has space.";
   return (
     <Card>
       <CardHeader><CardTitle>{title}</CardTitle><CardDescription>{description}</CardDescription></CardHeader>
@@ -367,20 +375,20 @@ function PhaseResults({ mode, preview }: { mode: DiscoveryMode; preview: Awaited
   );
 }
 
-function CandidatePreview({ mode, previewId, candidates, excludedIds, onSelect, onToggle, total }: { mode: DiscoveryMode; previewId: string; candidates: DiscoveryCandidate[]; excludedIds: Set<string>; onSelect: (candidate: DiscoveryCandidate) => void; onToggle: (candidate: DiscoveryCandidate, include: boolean) => void; total: number }) {
-  const selectedCandidates = candidates.filter((candidate) => candidate.included && candidate.pipeline_ready && !excludedIds.has(candidate.paper_id));
+function CandidatePreview({ mode, previewId, candidates, queuedCandidates, excludedIds, onSelect, onToggle, total }: { mode: DiscoveryMode; previewId: string; candidates: DiscoveryCandidate[]; queuedCandidates: DiscoveryCandidate[]; excludedIds: Set<string>; onSelect: (candidate: DiscoveryCandidate) => void; onToggle: (candidate: DiscoveryCandidate, include: boolean) => void; total: number }) {
+  const queuedIds = new Set(queuedCandidates.map((candidate) => candidate.paper_id));
   return (
     <Card className="min-w-0">
       <CardHeader className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0"><CardTitle>Candidate review</CardTitle><CardDescription>{mode === "random" ? `${total} eligible publications retained in seeded random order. Random inclusion is not evidence of dataset use.` : `${total} candidates ranked by evidence—not predicted reuse probability.`}</CardDescription></div>
-        <Button type="button" variant="outline" size="sm" className="shrink-0" disabled={!selectedCandidates.length} onClick={() => downloadCandidatePreviewCsv(previewId, mode, selectedCandidates)}><RiDownload2Line data-icon="inline-start" />Download selected CSV</Button>
+        <Button type="button" variant="outline" size="sm" className="shrink-0" disabled={!queuedCandidates.length} onClick={() => downloadCandidatePreviewCsv(previewId, mode, queuedCandidates)}><RiDownload2Line data-icon="inline-start" />Download selected CSV</Button>
       </CardHeader>
       <CardContent className="overflow-x-auto">
         <Table className="min-w-[940px]"><TableHeader><TableRow><TableHead>Include</TableHead><TableHead>Paper</TableHead><TableHead>{mode === "random" ? "Sampling basis" : "Evidence tier"}</TableHead><TableHead>Strength</TableHead><TableHead>{mode === "random" ? "Selection reason" : "Evidence"}</TableHead><TableHead>Access</TableHead></TableRow></TableHeader>
           <TableBody>{candidates.map((candidate) => {
-            const included = candidate.included && !excludedIds.has(candidate.paper_id);
+            const included = queuedIds.has(candidate.paper_id);
             return <TableRow key={candidate.paper_id}>
-              <TableCell><Switch aria-label={`Include ${candidate.title ?? candidate.paper_id}`} checked={included} disabled={!candidate.pipeline_ready || !candidate.included} onCheckedChange={(checked) => onToggle(candidate, checked)} /></TableCell>
+              <TableCell><Switch aria-label={`Include ${candidate.title ?? candidate.paper_id}`} checked={included} disabled={!included && !excludedIds.has(candidate.paper_id)} onCheckedChange={(checked) => onToggle(candidate, checked)} /></TableCell>
               <TableCell className="max-w-[340px]"><button type="button" className="block w-full text-left" onClick={() => onSelect(candidate)}><span className="block truncate font-medium hover:underline">{candidate.title || "Untitled OpenAlex work"}</span><span className="block font-mono text-xs text-muted-foreground">{candidate.paper_id}</span></button></TableCell>
               <TableCell><Badge variant={candidate.evidence_tier === "direct" ? "secondary" : "outline"} className="capitalize">{mode === "random" ? "Random" : candidate.evidence_tier}</Badge></TableCell>
               <TableCell>{mode === "random" ? "Not scored" : `${Math.round(candidate.candidate_strength)}/100`}</TableCell>

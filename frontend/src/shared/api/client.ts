@@ -232,7 +232,7 @@ export type DiscoveryPreview = {
   random_seed: number | null;
   partial: boolean;
   rate_limit: Record<string, string>;
-  stop_reason: "ready_target_met" | "cost_ceiling" | "phases_exhausted" | "provider_failure";
+  stop_reason: "pool_target_met" | "ready_target_met" | "cost_ceiling" | "phases_exhausted" | "provider_failure";
   completed_phases: string[];
   phase_results: Record<string, Record<string, unknown>>;
   warnings: string[];

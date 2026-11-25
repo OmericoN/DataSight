@@ -15,7 +15,7 @@ from datasight.application.extraction_engine import Block, OVERLAP_CHARACTERS, s
 from datasight.domain.candidate_detection import SECTION_RE, standardize_section
 from datasight.domain.extraction import StrictModel
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
-from datasight.infrastructure.ingestion.renderer import LEGACY_RENDERER_VERSION, RENDERER_VERSION, extract_markdown
+from datasight.infrastructure.ingestion.renderer import RENDERER_VERSION, RENDERER_VERSIONS, extract_markdown
 from datasight.infrastructure.llm.client import GatewayClient, InferenceError, RequestTooLarge, payload_for
 
 CHUNK_CHARACTERS = 24_000
@@ -51,7 +51,7 @@ def screen_publication(
         raise ValueError("Markdown is empty; rerender the document before detection")
 
     version = metadata.get("producer_version")
-    if version not in {LEGACY_RENDERER_VERSION, RENDERER_VERSION}:
+    if version not in RENDERER_VERSIONS:
         version = RENDERER_VERSION
         full_body = False
     else:

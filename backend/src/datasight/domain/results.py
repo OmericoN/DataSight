@@ -62,7 +62,7 @@ class ConversionResult:
             self.conversion_time = datetime.now()
 
 
-RENDERER_VERSION = "tei-renderer-v7"
+RENDERER_VERSION = "tei-renderer-v8"
 
 
 @dataclass

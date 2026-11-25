@@ -82,37 +82,37 @@ flowchart TD
     B --> C["Phase 1: Direct evidence"]
     C --> C1["OpenAlex filter: datasets in catalog work IDs; batches of 100"]
     C --> C2["Search citations of catalog works, with and without reuse terms"]
-    C1 --> D["Exclude catalog hits and identify likely original source papers"]
+    C1 --> D["Exclude previously processed works and catalog hits. Identify likely original source papers"]
     C2 --> D
-    D --> E{"Enough unique PDF-ready candidates?"}
+    D --> E{"Candidate pool filled?"}
     E -->|"Yes"| R["Rank and retain candidate pool"]
     E -->|"No"| P["Phase 2: Search citations of likely source papers for reuse terms"]
-    P --> P1{"Enough unique PDF-ready candidates?"}
+    P --> P1{"Candidate pool filled?"}
     P1 -->|"Yes"| R
     P1 -->|"No"| F["Phase 3: Exact mentions"]
     F --> F1["Exact DOI search; batches of 25"]
     F --> F2["Exact distinctive title and alias search; batches of 5"]
     F1 --> G["Attach a UM dataset ID only when the exact term is visible in returned title or abstract"]
     F2 --> G
-    G --> H{"Enough unique PDF-ready candidates?"}
+    G --> H{"Candidate pool filled?"}
     H -->|"Yes"| R
     H -->|"No"| I["Phase 4: Search citations of remaining source and related works for reuse terms"]
-    I --> J{"Enough unique PDF-ready candidates?"}
+    I --> J{"Candidate pool filled?"}
     J -->|"Yes"| R
     J -->|"No"| K["Phase 5: Lazily resolve priority OpenAlex topics"]
     K --> L["Search resolved topics and informative non-generic keywords"]
-    L --> M{"Ready target, cost ceiling, or expansion exhausted?"}
+    L --> M{"Pool filled, cost ceiling reached, or search exhausted?"}
     M -->|"Continue"| L
     M -->|"Stop"| R
     R --> R1["Evidence tier: Direct, Exact, or Expanded"]
     R --> R2["Candidate strength: transparent 0 to 100 evidence score; not probability"]
-    R1 --> S["Reserve strongest PDF-ready papers up to process-now target"]
+    R1 --> S["Retain the highest-ranked eligible papers up to the pool limit"]
     R2 --> S
-    S --> T["Fill remaining pool capacity with additional ready papers and no-PDF watchlist leads"]
+    S --> T["Select PDF-ready papers from the pool up to the Process now limit"]
     T --> U["Operator reviews and excludes candidates"]
     U --> V["Launch standard or high-throughput run with preview ID"]
     V --> W["Revalidate expiry, strategy version, and catalog fingerprint"]
-    W --> X["Materialize run-scoped discovery candidates and backfill exclusions"]
+    W --> X["Recheck prior processing and backfill exclusions from the pool"]
     X --> Y["Download PDFs, convert and render full text, detect mentions, and run LLM extraction"]
     Y --> Z["Only downstream evidence may confirm actual dataset use"]
     C -.-> Q{"Next call fits remaining cost budget?"}

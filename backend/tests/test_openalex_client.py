@@ -256,6 +256,7 @@ def test_search_with_meta_stops_before_next_page_would_exceed_budget():
     assert result.calls == 1
     assert result.cost_usd == 0.001
     assert result.truncated is True
+    assert result.next_cursor == "page-2"
 
 
 def test_rate_limit_status_returns_safe_daily_budget_fields():

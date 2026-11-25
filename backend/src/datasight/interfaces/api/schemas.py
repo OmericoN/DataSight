@@ -242,7 +242,7 @@ class DiscoveryPreviewResponse(BaseModel):
     random_seed: int | None = None
     partial: bool
     rate_limit: dict[str, str]
-    stop_reason: Literal["ready_target_met", "cost_ceiling", "phases_exhausted", "provider_failure"]
+    stop_reason: Literal["pool_target_met", "ready_target_met", "cost_ceiling", "phases_exhausted", "provider_failure"]
     completed_phases: list[str]
     phase_results: dict[str, dict[str, Any]]
     warnings: list[str]

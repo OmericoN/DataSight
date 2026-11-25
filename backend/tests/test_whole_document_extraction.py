@@ -9,7 +9,7 @@ from benchmarks.vllm import replay
 from datasight import config
 from datasight.application import llm_extraction
 from datasight.application.catalog_extraction import (
-    CANDIDATE_PROMPT_VERSION, CATALOG_V4, LEGACY_PROMPT_VERSION, PREVIOUS_CATALOG_V4, PROMPT_VERSION,
+    CANDIDATE_PROMPT_VERSION, CATALOG_V4, CATALOG_V5, LEGACY_PROMPT_VERSION, PREVIOUS_CATALOG_V4, PROMPT_VERSION,
     make_chunk, run_catalog_extraction, scan_chunk,
 )
 from datasight.application.whole_document_extraction import WholeDocumentResponse, extract_whole_document
@@ -260,7 +260,7 @@ def test_catalog_run_uses_selected_render_and_continues_if_a_detected_file_disap
     monkeypatch.delenv("LLM_EXTRACTION_STRATEGY", raising=False)
     monkeypatch.setattr(config, "EXTRACTIONS_DIR", tmp_path / "extractions")
     settings = llm_extraction.extraction_configuration(render_profile=profile)
-    assert settings["prompt_version"] == "catalog-v5"
+    assert settings["prompt_version"] == PROMPT_VERSION
     assert llm_extraction.catalog_configuration(profile, LEGACY_PROMPT_VERSION) in llm_extraction.supported_extraction_configurations()
     assert llm_extraction.extraction_configuration()["render_profile"] == "pruned"
     text = "We used the Alpha cohort.\r\nData were archived."
@@ -370,7 +370,7 @@ def test_catalog_roles_require_body_evidence_and_supported_text(gateway):
         ["Alpha", False, [1], [["role_created", 1, "We created Alpha"]]],
         ["Beta", False, [3], [["role_used", 3, "Beta"]]],
     ]}))
-    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash", prompt_version=CATALOG_V5)
     assert len(result.datasets) == 2
     assert all(entry.use.roles.state == "not_reported" for entry in result.datasets)
 
@@ -451,7 +451,7 @@ def test_exact_citation_title_keeps_only_its_own_zenodo_record(gateway):
         ["CT Lung Lesion", False, [2], [["download", 2, url]]],
         ["Duke Liver", False, [3], [["download", 3, url]]],
     ]}))
-    lung, liver = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash").datasets
+    lung, liver = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash", prompt_version=CATALOG_V5).datasets
     link, = lung.identity.urls.values
     assert link.value.url == url and link.value.target == "landing_page"
     assert all(o.bibliography_only for o in lung.occurrences)
@@ -466,7 +466,7 @@ def test_same_title_with_two_zenodo_records_requires_review(gateway):
             f"- **[1]** {{#b1}} Unknown (). Atlas. URL: {url}\n"
             "- **[2]** {#b2} Unknown (). Atlas. URL: https://zenodo.org/records/2")
     post.return_value = completion(json.dumps({"c": True, "g": [["Atlas", False, [2], [["download", 2, url]]]]}))
-    dataset, = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash").datasets
+    dataset, = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash", prompt_version=CATALOG_V5).datasets
     assert dataset.identity.urls.state == "not_reported" and dataset.review_reasons
 
 
@@ -488,6 +488,36 @@ def test_numbered_tcia_links_recover_wrapped_host_and_slug_with_original_evidenc
         cite, = [e for e in result.evidence if e.evidence_id in link.evidence_ids]
         assert cite.quote == line == text[cite.char_start:cite.char_end]
     assert controls.identity.urls.state == "not_reported"
+
+
+def test_catalog_skips_unparsed_tables_and_ordinary_citations_and_requires_a_deposit_link(gateway, monkeypatch):
+    client, post = gateway
+    monkeypatch.setattr("datasight.application.catalog_extraction.CATALOG_TARGET_CHARS", 500)
+    text = ("We used Alpha.\n\n## References\n"
+            "- **[A]** {#method} Smith (2021). Cyclemix. DOI: https://doi.org/10.1234/article\n"
+            "- **[B]** {#data} Reed (2020). Data From Atlas. DOI: https://doi.org/10.1234/atlas\n"
+            "- **[C]** {#ambiguous} Reed (2020). Data From Beta. DOI: https://doi.org/10.1234/one "
+            "DOI: https://doi.org/10.1234/two\n\n"
+            "## Unparsed appendix table material\n\n"
+            + ("> {#row} El Fragments. URL: https://zenodo.org/records/1234\n" * 40))
+    post.return_value = completion(json.dumps({"c": True, "g": [
+        ["Alpha", False, [1, 4], [["role_used", 1, "We used Alpha"], ["doi", 4, "https://doi.org/10.1234/article"]]],
+        ["Cyclemix", False, [4], []],
+        ["Atlas", False, [5], []],
+        ["Beta", False, [6], []],
+    ]}))
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W", "hash")
+    post.assert_called_once()
+    supplied = post.call_args.kwargs["json"]["messages"][1]["content"]
+    assert "Cyclemix" not in supplied and "El Fragments" not in supplied
+    alpha, atlas = result.datasets
+    assert alpha.display_name == "Alpha" and not alpha.identity.identifiers.values
+    assert [v.value for v in alpha.use.roles.values] == ["used"]
+    assert atlas.display_name == "Atlas" and atlas.identity.identifiers.values[0].value.literal.endswith("/atlas")
+    assert all(o.bibliography_only for o in atlas.occurrences)
+    assert not atlas.use.roles.values
+    assert result.coverage["covered_characters"] == len(text)
+    assert result.coverage["validated_blocks"] == 1
 
 
 def test_catalog_does_not_treat_prior_work_as_current_use(gateway):
@@ -607,7 +637,7 @@ def test_catalog_catalog_distinguishes_deposit_and_article_byline(gateway):
             ["creators", 3, "Lee"], ["year", 3, "2023"], ["doi", 3, "10.5555/article"],
         ]],
     ]}))
-    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 1, text, "W1", "hash", prompt_version=CATALOG_V5)
     data = json.loads(post.call_args.kwargs["json"]["messages"][1]["content"])
     assert data["possible_data_deposit_lines"] == [2]
     identity = result.datasets[0].identity
@@ -641,7 +671,7 @@ def test_catalog_preplanned_chunks_cover_long_lines_with_exact_offsets(gateway, 
         return completion(json.dumps({"c": True, "g": [[None, True, [lines[-1][0]], []]]}))
 
     post.side_effect = scan
-    result = run_catalog_extraction(checkpoint_repo(), client, 11, text, "W1", "hash")
+    result = run_catalog_extraction(checkpoint_repo(), client, 11, text, "W1", "hash", prompt_version=CATALOG_V5)
 
     assert post.call_count >= 2
     assert result.coverage["validated_blocks"] == post.call_count

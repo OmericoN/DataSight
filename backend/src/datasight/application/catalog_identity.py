@@ -11,6 +11,7 @@ from urllib.parse import unquote_plus, urlsplit
 from datasight.application.catalog_candidate_resolution import add_evidence
 from datasight.application.catalog_features import REPOSITORY_NAME
 from datasight.application.extraction_engine import Block
+from datasight.infrastructure.ingestion.renderer import UNPARSED_TABLE_PREFIX
 from datasight.matching.normalization import normalize_identifier
 
 URL = re.compile(r"https?://[^\s<>\[\](),;]+", re.I)
@@ -125,6 +126,17 @@ def _deposit(quote: str, line: Block) -> Deposit | None:
 
 def has_explicit_deposit_citation(line: str) -> bool:
     return _deposit(line.rstrip(), Block(0, len(line))) is not None
+
+
+def has_catalog_deposit_link(line: str) -> bool:
+    line = line.rstrip()
+    if not line.startswith("- **["):
+        return False
+    reference = COMPACT_REFERENCE.match(line)
+    return bool(
+        (reference and ZENODO_RECORD.fullmatch(line, reference.end()))
+        or (("DOI:" in line or "URL:" in line) and has_explicit_deposit_citation(line))
+    )
 
 
 def _collection_links(line: str, known: set[str], block: Block) -> list[tuple[str, CollectionLink]]:
@@ -256,6 +268,8 @@ def reconcile_catalog_identity(text: str, groups: list[dict[str, Any]], evidence
         line = raw.rstrip("\r\n")
         span = Block(start, start + len(line))
         start += len(raw)
+        if line.startswith(UNPARSED_TABLE_PREFIX + "{#"):
+            continue
         if line.startswith("- **["):
             reference = COMPACT_REFERENCE.match(line)
             if reference and (record := ZENODO_RECORD.fullmatch(line, reference.end())):

@@ -173,7 +173,7 @@ def test_language_filter_is_shared_by_every_strategy_query():
     assert all(query.filters["language"] == "en" for query in queries)
 
 
-def test_ranking_uses_tiers_not_probability_and_reserves_ready_pool_capacity():
+def test_pool_membership_is_independent_of_the_processing_limit():
     candidates = rank_strategy_candidates(
         [
             {"paperId": "W900", "title": "Direct no PDF", "discovery_reasons": ["dataset_link"], "raw": {"datasets": [{"id": "W1"}]}},
@@ -181,7 +181,7 @@ def test_ranking_uses_tiers_not_probability_and_reserves_ready_pool_capacity():
             {"paperId": "W902", "title": "Ready expanded", "open_access_url": "https://example.org/902.pdf", "discovery_reasons": ["focused_keyword"], "raw": {}},
         ],
         known_dataset_ids=["W1"],
-        processing_limit=1,
+        processing_limit=2,
         discovery_limit=2,
     )
 
@@ -191,6 +191,7 @@ def test_ranking_uses_tiers_not_probability_and_reserves_ready_pool_capacity():
     assert candidates[0]["included"] is False
     assert candidates[1]["included"] is True
     assert candidates[1]["candidate_strength"] == 85
+    assert sum(candidate["included"] for candidate in candidates) == 1
 
 
 def test_ranking_merges_evidence_and_caps_corroboration_inside_strongest_tier():

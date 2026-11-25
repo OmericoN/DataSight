@@ -14,7 +14,8 @@ from datasight import config
 from datasight.application.bounded_extraction import BoundedExtractionEngine, PROMPT_VERSION as BOUNDED_PROMPT_VERSION
 from datasight.application.extraction_engine import CHUNK_CHARACTERS, LOCATOR_BLOCK_TOKENS, OVERLAP_CHARACTERS, ExtractionEngine
 from datasight.application.catalog_extraction import (
-    CATALOG_PROMPT_VERSIONS, CATALOG_SPLIT_DEPTH, PROMPT_VERSION as CATALOG_PROMPT_VERSION, run_catalog_extraction,
+    CATALOG_PROMPT_VERSIONS, CATALOG_SPLIT_DEPTH, CATALOG_SPLIT_VERSIONS,
+    PROMPT_VERSION as CATALOG_PROMPT_VERSION, run_catalog_extraction,
 )
 from datasight.application.whole_document_extraction import (
     PROMPT_VERSION as WHOLE_DOCUMENT_PROMPT_VERSION,
@@ -26,7 +27,7 @@ from datasight.application.whole_document_extraction import (
 from datasight.domain.extraction import PROMPT_VERSION, SCHEMA_VERSION, PublicationExtraction
 from datasight.infrastructure.ingestion.file_integrity import sha256_file
 from datasight.infrastructure.ingestion.renderer import (
-    DEFAULT_RENDER_PROFILE, LEGACY_RENDERER_VERSION, RENDERER_VERSION, RenderProfile, _write_atomic, extract_markdown,
+    DEFAULT_RENDER_PROFILE, RENDERER_VERSION, RENDERER_VERSIONS, RenderProfile, _write_atomic, extract_markdown,
 )
 from datasight.infrastructure.llm.client import CONTEXT_TOKENS, MAX_PROMPT_CHARS, MAX_TOKENS, TEMPLATE_RESERVE, GatewayClient, InferenceUnavailable
 from datasight.infrastructure.llm.tokenizer import TOKENIZER_REVISION, TOKENIZER_SHA256
@@ -96,7 +97,7 @@ def catalog_configuration(render_profile: RenderProfile, prompt_version: str = C
         **whole_document_configuration(),
         "prompt_version": prompt_version,
         "render_profile": render_profile,
-        "max_output_splits_per_chunk": CATALOG_SPLIT_DEPTH if prompt_version == CATALOG_PROMPT_VERSION else 1,
+        "max_output_splits_per_chunk": CATALOG_SPLIT_DEPTH if prompt_version in CATALOG_SPLIT_VERSIONS else 1,
     }
 
 
@@ -105,7 +106,7 @@ def supported_extraction_configurations() -> tuple[dict[str, Any], ...]:
         *(catalog_configuration(profile, version) for version in CATALOG_PROMPT_VERSIONS for profile in ("pruned", "full_body")),
         whole_document_configuration(), extraction_configuration(legacy=False), extraction_configuration(legacy=True),
     )
-    return current + tuple({**settings, "renderer_version": LEGACY_RENDERER_VERSION} for settings in current)
+    return tuple({**settings, "renderer_version": version} for version in RENDERER_VERSIONS for settings in current)
 
 
 def fingerprint(source_hash: str, settings: dict[str, Any]) -> str:

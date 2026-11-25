@@ -88,7 +88,7 @@ const discoveryPreview = {
   max_cost_usd: 0.25,
   partial: false,
   rate_limit: { remaining: "959" },
-  stop_reason: "ready_target_met",
+  stop_reason: "pool_target_met",
   completed_phases: ["direct"],
   phase_results: { direct: { status: "completed", fetched: 42, unique_added: 40, ready_after_phase: 81, calls: 2, cost_usd: 0.002 } },
   warnings: [],
@@ -587,11 +587,11 @@ describe("App routed workflow", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     const processHelp = screen.getByRole("button", { name: "About Process now" });
     fireEvent.pointerMove(processHelp, { pointerType: "mouse" });
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("PDF-link target");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("from the completed pool");
     fireEvent.keyDown(processHelp, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     fireEvent.focus(processHelp);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("PDF-link target");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("from the completed pool");
     fireEvent.blur(processHelp);
     fireEvent.click(screen.getByRole("link", { name: /^Runs/ }));
 

@@ -124,6 +124,31 @@ def test_migration_atomic_publish_zero_result_and_run_isolation(database):
     assert repo.export_insight_rows() == []  # newest global result is a completed zero
 
 
+def test_discovery_skips_terminal_publications_and_keeps_unfinished_ones(database):
+    repo = database
+    prior_run, current_run, publication = seed(repo)
+    extraction = repo.begin_publication_extraction(prior_run, publication, "zero", {})
+    repo.publish_extraction(extraction["id"], result().model_copy(update={"datasets": []}))
+
+    for paper_id, decision in (("W2", "no_use"), ("W3", "likely_use")):
+        repo.cursor.execute(
+            "INSERT INTO publications(paper_id,title,source) VALUES (%s,%s,'test') RETURNING id",
+            (paper_id, paper_id),
+        )
+        publication_id = repo.cursor.fetchone()["id"]
+        repo.cursor.execute(
+            """INSERT INTO artifacts(publication_id,artifact_type,path,sha256)
+               VALUES (%s,'markdown',%s,'hash') RETURNING id""",
+            (publication_id, f"{paper_id}.md"),
+        )
+        artifact_id = repo.cursor.fetchone()["id"]
+        repo.record_mention_screening(
+            publication_id, artifact_id, "hash", SCREENING_VERSION, {"decision": decision},
+        )
+    assert repo.processed_discovery_paper_ids(["W1", "W2", "W3", "W4"], current_run) == {"W1", "W2"}
+    assert repo.processed_discovery_paper_ids(["W1"], prior_run) == set()
+
+
 def test_distinct_papers_share_run_lock_and_only_original_task_reclaims(database):
     repo = database
     run1, _, publication = seed(repo)

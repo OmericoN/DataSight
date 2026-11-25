@@ -22,6 +22,7 @@ from datasight.domain.discovery_strategy import (
     build_focused_queries,
     build_manual_query,
     build_random_query,
+    eligible_discovery_work,
     profile_um_catalog,
     rank_strategy_candidates,
     structured_direct_dataset_ids,
@@ -32,6 +33,8 @@ from datasight.infrastructure.pubfetcher.openalex import OpenAlexApiError, OpenA
 
 PREVIEW_TTL = timedelta(minutes=30)
 STRATEGY_VERSION = 3
+OPENALEX_PAGE_SIZE = 100
+MAX_RANDOM_DRAWS = 10_000
 
 
 class DiscoveryPreviewError(RuntimeError):
@@ -128,9 +131,15 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
     profile = profile_um_catalog(records, resolved_topics)
 
     fetched: list[dict[str, Any]] = []
+    catalog_dataset_ids = [record.um_dataset_id for record in records]
+    known_ids = {openalex_work_id(value) for value in catalog_dataset_ids}
+    seen_ids: set[str] = set()
+    eligible_ids: set[str] = set()
+    ready_ids: set[str] = set()
     catalog = CatalogPublications.from_records(records) if mode == "catalog_funnel" else None
     source_papers: set[str] = set()
     excluded_catalog_ids: set[str] = set()
+    excluded_processed_ids: set[str] = set()
     completed_phases: list[str] = []
     phase_results: dict[str, dict[str, Any]] = {}
     actual_cost = 0.0
@@ -142,6 +151,45 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
     provider_failed = False
     executed_queries: list[dict[str, Any]] = []
 
+    def retain_works(
+        works: list[dict[str, Any]], strategy_query: StrategyQuery, result: dict[str, Any],
+    ) -> None:
+        work_ids = [_paper_id(work) for work in works]
+        new_ids = set(work_ids) - seen_ids - {""}
+        if new_ids:
+            with PipelineRepository() as repo:
+                excluded_processed_ids.update(repo.processed_discovery_paper_ids(new_ids))
+            seen_ids.update(new_ids)
+        for work, paper_id in zip(works, work_ids, strict=True):
+            catalog_reason = catalog.exclusion_reason(work) if catalog else None
+            if catalog and catalog_reason == "source_title" and paper_id.startswith("W") and paper_id not in catalog.work_ids:
+                source_papers.add(paper_id)
+            if paper_id in excluded_processed_ids:
+                result["processed_hits_skipped"] += 1
+                continue
+            if catalog_reason:
+                result["catalog_hits_skipped"] += 1
+                excluded_catalog_ids.add(paper_id)
+                continue
+            if not eligible_discovery_work(work, paper_id, known_ids):
+                result["ineligible_hits_skipped"] += 1
+                continue
+            if strategy_query.phase == DiscoveryPhase.RANDOM:
+                work["random_sample_rank"] = len(fetched) + 1
+            reasons = set(work.get("discovery_reasons") or []) | {strategy_query.evidence_reason.value}
+            if strategy_query.phase == DiscoveryPhase.DIRECT and strategy_query.query:
+                reasons.add(EvidenceReason.REUSE_LANGUAGE.value)
+            work["discovery_reasons"] = sorted(reasons)
+            work["matched_um_dataset_ids"] = sorted(
+                set(work.get("matched_um_dataset_ids") or [])
+                | set(verified_exact_dataset_ids(work, strategy_query))
+                | set(structured_direct_dataset_ids(work, strategy_query))
+            )
+            fetched.append(work)
+            eligible_ids.add(paper_id)
+            if work.get("open_access_url"):
+                ready_ids.add(paper_id)
+
     def execute_phase(
         phase: DiscoveryPhase,
         queries: list[StrategyQuery],
@@ -149,26 +197,20 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         stop_after_each_query: bool = False,
     ) -> bool:
         nonlocal actual_cost, actual_calls, rate_limit, partial, stop_reason, provider_failed
-        before_ids = {_paper_id(item) for item in fetched}
+        before_count = len(eligible_ids)
         result = {
             "status": "completed",
             "fetched": 0,
             "reported_total": 0,
             "unique_added": 0,
             "catalog_hits_skipped": 0,
-            "ready_after_phase": _ready_count(fetched, records),
+            "processed_hits_skipped": 0,
+            "ineligible_hits_skipped": 0,
+            "ready_after_phase": len(ready_ids),
             "calls": 0,
             "cost_usd": 0.0,
         }
         for strategy_query in queries:
-            minimum_cost = 0.001 if strategy_query.query else 0.0001
-            remaining_cost = max_cost_usd - actual_cost
-            if remaining_cost + 1e-12 < minimum_cost:
-                result["status"] = "partial"
-                partial = True
-                stop_reason = "cost_ceiling"
-                warnings.append("The OpenAlex cost ceiling was reached; usable partial results were retained.")
-                break
             query_audit = {
                 "phase": phase.value,
                 "evidence_reason": strategy_query.evidence_reason.value,
@@ -176,79 +218,103 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
                 "search_mode": strategy_query.search_mode,
                 "filters": strategy_query.filters,
                 "sort": strategy_query.sort,
-                "sample_size": strategy_query.sample_size,
+                "sample_size": 0 if strategy_query.sample_size is not None else None,
                 "sample_seed": strategy_query.sample_seed,
             }
             executed_queries.append(query_audit)
-            try:
-                response = client.search_works_with_meta(
-                    query=strategy_query.query,
-                    limit=min(strategy_query.max_results, max(100, discovery_limit)),
-                    filters=strategy_query.filters,
-                    sort=strategy_query.sort,
-                    search_mode=strategy_query.search_mode,
-                    sample_size=strategy_query.sample_size,
-                    sample_seed=strategy_query.sample_seed,
-                    max_cost_usd=remaining_cost,
-                )
-            except OpenAlexApiError as exc:
-                if exc.status_code in {401, 403}:
-                    raise DiscoveryPreviewError(
-                        "The configured OpenAlex API key was rejected.",
-                        kind="invalid_api_key",
-                    ) from exc
-                if exc.kind == "budget_exhausted":
+            minimum_cost = 0.001 if strategy_query.query else 0.0001
+            page_cost = minimum_cost
+            cursor = "*"
+            sample_seed = strategy_query.sample_seed
+            query_calls = 0
+            query_fetched = 0
+            reported_total = 0
+            empty_draws = 0
+            sampling = strategy_query.sample_size is not None
+            if sampling:
+                scan_limit = MAX_RANDOM_DRAWS
+            elif phase == DiscoveryPhase.MANUAL:
+                scan_limit = None
+            else:
+                scan_limit = strategy_query.max_results
+
+            while scan_limit is None or query_fetched < scan_limit:
+                remaining_cost = round(max_cost_usd - actual_cost, 9)
+                if remaining_cost < page_cost:
                     result["status"] = "partial"
                     partial = True
                     stop_reason = "cost_ceiling"
                     warnings.append("The OpenAlex cost ceiling was reached; usable partial results were retained.")
                     break
-                provider_failed = True
-                partial = True
-                result["status"] = "partial"
-                warnings.append(f"One {phase.value} OpenAlex query failed after retries.")
-                continue
-
-            actual_cost += response.cost_usd
-            actual_calls += response.calls
-            rate_limit = response.rate_limit or rate_limit
-            partial = partial or response.truncated
-            if response.truncated:
-                result["status"] = "partial"
-            result["fetched"] += len(response.works)
-            result["reported_total"] += response.total_count
-            result["calls"] += response.calls
-            result["cost_usd"] = round(float(result["cost_usd"]) + response.cost_usd, 6)
-            for work in response.works:
-                paper_id = _paper_id(work)
-                if catalog and (reason := catalog.exclusion_reason(work)):
-                    result["catalog_hits_skipped"] += 1
-                    excluded_catalog_ids.add(paper_id)
-                    if reason == "source_title" and paper_id.startswith("W") and paper_id not in catalog.work_ids:
-                        source_papers.add(paper_id)
-                    continue
-                if phase == DiscoveryPhase.RANDOM:
-                    work["random_sample_rank"] = len(fetched) + 1
-                reasons = set(work.get("discovery_reasons") or []) | {strategy_query.evidence_reason.value}
-                if phase == DiscoveryPhase.DIRECT and strategy_query.query:
-                    reasons.add(EvidenceReason.REUSE_LANGUAGE.value)
-                work["discovery_reasons"] = sorted(reasons)
-                verified_ids = verified_exact_dataset_ids(work, strategy_query)
-                direct_ids = structured_direct_dataset_ids(work, strategy_query)
-                work["matched_um_dataset_ids"] = sorted(
-                    set(work.get("matched_um_dataset_ids") or [])
-                    | set(verified_ids)
-                    | set(direct_ids)
+                page_size = OPENALEX_PAGE_SIZE if scan_limit is None else min(
+                    OPENALEX_PAGE_SIZE, scan_limit - query_fetched,
                 )
-                fetched.append(work)
-            if stop_after_each_query and _ready_count(fetched, records) >= processing_limit:
-                stop_reason = "ready_target_met"
+                try:
+                    response = client.search_works_with_meta(
+                        query=strategy_query.query,
+                        limit=page_size,
+                        filters=strategy_query.filters,
+                        sort=strategy_query.sort,
+                        cursor=cursor,
+                        search_mode=strategy_query.search_mode,
+                        sample_size=page_size if sampling else None,
+                        sample_seed=sample_seed,
+                        max_cost_usd=remaining_cost,
+                    )
+                except OpenAlexApiError as exc:
+                    if exc.status_code in {401, 403}:
+                        raise DiscoveryPreviewError(
+                            "The configured OpenAlex API key was rejected.",
+                            kind="invalid_api_key",
+                        ) from exc
+                    result["status"] = "partial"
+                    partial = True
+                    if exc.kind == "budget_exhausted":
+                        stop_reason = "cost_ceiling"
+                        warnings.append("The OpenAlex cost ceiling was reached; usable partial results were retained.")
+                    else:
+                        provider_failed = True
+                        warnings.append(f"One {phase.value} OpenAlex query failed after retries.")
+                    break
+
+                query_calls += response.calls
+                query_fetched += len(response.works)
+                reported_total = max(reported_total, response.total_count)
+                actual_cost += response.cost_usd
+                actual_calls += response.calls
+                rate_limit = response.rate_limit or rate_limit
+                result["fetched"] += len(response.works)
+                result["calls"] += response.calls
+                result["cost_usd"] = round(result["cost_usd"] + response.cost_usd, 6)
+                if response.calls:
+                    page_cost = max(minimum_cost, response.cost_usd / response.calls)
+                previous_seen = len(seen_ids)
+                retain_works(response.works, strategy_query, result)
+                if len(eligible_ids) >= discovery_limit or not response.works:
+                    break
+                if sampling:
+                    empty_draws = empty_draws + 1 if len(seen_ids) == previous_seen else 0
+                    if empty_draws >= 3:
+                        break
+                    if sample_seed is not None:
+                        sample_seed = ((sample_seed - 1 + max(1, response.calls)) % 2_147_483_647) + 1
+                elif not response.next_cursor or response.next_cursor == cursor:
+                    break
+                else:
+                    cursor = response.next_cursor
+            result["reported_total"] += reported_total
+            query_audit["calls"] = query_calls
+            if sampling:
+                query_audit["sample_size"] = query_fetched
+            if stop_reason == "cost_ceiling" or (stop_after_each_query and len(eligible_ids) >= discovery_limit):
                 break
 
-        after_ids = {_paper_id(item) for item in fetched}
-        result["unique_added"] = len(after_ids - before_ids)
-        result["ready_after_phase"] = _ready_count(fetched, records)
-        result["duplicate_count"] = int(result["fetched"]) - int(result["catalog_hits_skipped"]) - int(result["unique_added"])
+        result["unique_added"] = len(eligible_ids) - before_count
+        result["ready_after_phase"] = len(ready_ids)
+        result["duplicate_count"] = (
+            result["fetched"] - result["catalog_hits_skipped"]
+            - result["processed_hits_skipped"] - result["ineligible_hits_skipped"] - result["unique_added"]
+        )
         result["duplicate_rate"] = round(
             float(result["duplicate_count"]) / int(result["fetched"]), 4
         ) if result["fetched"] else 0.0
@@ -258,7 +324,9 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         phase_results[phase.value] = result
         if result["status"] == "completed":
             completed_phases.append(phase.value)
-        return stop_reason in {"ready_target_met", "cost_ceiling"}
+        if len(eligible_ids) >= discovery_limit and stop_reason != "cost_ceiling":
+            stop_reason = "pool_target_met"
+        return stop_reason in {"pool_target_met", "cost_ceiling"}
 
     if mode == "manual":
         execute_phase(
@@ -273,8 +341,6 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
                 )
             ],
         )
-        if _ready_count(fetched, records) >= processing_limit:
-            stop_reason = "ready_target_met"
     elif mode == "random":
         execute_phase(
             DiscoveryPhase.RANDOM,
@@ -289,8 +355,6 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
                 )
             ],
         )
-        if _ready_count(fetched, records) >= processing_limit:
-            stop_reason = "ready_target_met"
     else:
         common = {
             "from_year": from_year,
@@ -299,18 +363,12 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
             "language": language,
         }
         halted = execute_phase(DiscoveryPhase.DIRECT, build_direct_queries(records, **common))
-        if not halted and _ready_count(fetched, records) >= processing_limit:
-            stop_reason = "ready_target_met"
-            halted = True
         direct_sources = source_papers.copy()
         if not halted and direct_sources:
             phase = DiscoveryPhase.SOURCE_CITATIONS
             halted = execute_phase(phase, build_citing_queries(direct_sources, phase, **common), stop_after_each_query=True)
         if not halted:
             halted = execute_phase(DiscoveryPhase.EXACT, build_exact_queries(records, **common))
-            if not halted and _ready_count(fetched, records) >= processing_limit:
-                stop_reason = "ready_target_met"
-                halted = True
         if not halted and catalog:
             seeds = (catalog.related_work_ids | source_papers) - direct_sources - catalog.work_ids
             phase = DiscoveryPhase.RELATED
@@ -352,7 +410,8 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
                     "fetched": 0,
                     "reported_total": 0,
                     "unique_added": 0,
-                    "ready_after_phase": _ready_count(fetched, records),
+                    "processed_hits_skipped": 0,
+                    "ready_after_phase": len(ready_ids),
                     "calls": topic_calls,
                     "cost_usd": topic_cost,
                     "duplicate_count": 0,
@@ -381,7 +440,7 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
 
     candidates = rank_strategy_candidates(
         fetched,
-        [record.um_dataset_id for record in records],
+        catalog_dataset_ids,
         processing_limit=processing_limit,
         discovery_limit=discovery_limit,
     )
@@ -390,10 +449,14 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
     included_count = sum(bool(candidate["included"]) for candidate in candidates)
     if stop_reason == "phases_exhausted" and provider_failed:
         stop_reason = "provider_failure"
+    if len(candidates) < discovery_limit:
+        warnings.append(f"Discovery filled {len(candidates)} of {discovery_limit} candidate pool slots.")
+    if included_count < processing_limit:
+        warnings.append(f"{included_count} pooled candidates have a PDF URL for {processing_limit} processing slots.")
 
     preview_id = str(uuid4())
     expires_at = datetime.now(UTC) + PREVIEW_TTL
-    unique_fetched = len({_paper_id(item) for item in fetched} | excluded_catalog_ids)
+    unique_fetched = len(seen_ids)
     if mode == "random":
         estimated_cost = round(math.ceil(discovery_limit / 100) * 0.0001, 4)
     elif mode == "manual":
@@ -432,7 +495,9 @@ def create_discovery_preview(request: dict[str, Any]) -> dict[str, Any]:
         "metrics": {
             "pipeline_ready_definition": "open_access_pdf_url_present_unverified",
             "target_met": ready_count >= processing_limit,
+            "pool_target_met": len(candidates) == discovery_limit,
             "unique_catalog_works_skipped": len(excluded_catalog_ids),
+            "unique_processed_works_skipped": len(excluded_processed_ids),
             "unique_fetched": unique_fetched,
             "duplicates_seen": sum(result["fetched"] for result in phase_results.values()) - unique_fetched,
             "cost_per_retained_candidate": round(actual_cost / len(candidates), 6) if candidates else None,
@@ -464,23 +529,32 @@ def materialize_discovery_preview(
     payload = dict(preview.get("payload") or {})
     candidates = [dict(candidate) for candidate in payload.get("candidates") or []]
     excluded = {openalex_work_id(value) for value in excluded_candidate_ids or []}
-    included = 0
-    for candidate in candidates:
-        paper_id = openalex_work_id(str(candidate.get("paper_id") or candidate.get("paperId") or ""))
-        candidate["included"] = False
-        if paper_id in excluded:
-            candidate["exclusion_reason"] = "Excluded in preview"
-        elif not candidate.get("pipeline_ready"):
-            candidate["exclusion_reason"] = "No usable PDF link"
-        elif included >= effective_limit:
-            candidate["exclusion_reason"] = "Processing limit reached"
-        else:
-            candidate["included"] = True
-            candidate["exclusion_reason"] = None
-            included += 1
-
+    candidate_ids = [
+        openalex_work_id(candidate.get("paper_id") or candidate.get("paperId"))
+        for candidate in candidates
+    ]
     with PipelineRepository() as repo:
-        repo.upsert_publications(candidates, source="openalex")
+        processed_ids = repo.processed_discovery_paper_ids(candidate_ids, pipeline_run_id)
+        included = 0
+        for candidate, paper_id in zip(candidates, candidate_ids, strict=True):
+            candidate["included"] = False
+            if paper_id in processed_ids:
+                candidate["exclusion_reason"] = "Already processed"
+            elif paper_id in excluded:
+                candidate["exclusion_reason"] = "Excluded in preview"
+            elif not candidate.get("pipeline_ready"):
+                candidate["exclusion_reason"] = "No usable PDF link"
+            elif included >= effective_limit:
+                candidate["exclusion_reason"] = "Processing limit reached"
+            else:
+                candidate["included"] = True
+                candidate["exclusion_reason"] = None
+                included += 1
+        repo.upsert_publications(
+            (candidate for candidate, paper_id in zip(candidates, candidate_ids, strict=True)
+             if paper_id not in processed_ids),
+            source="openalex",
+        )
         persisted = repo.persist_discovery_candidates(pipeline_run_id, candidates)
         paper_ids = repo.included_discovery_paper_ids(pipeline_run_id)
     return {
@@ -488,7 +562,12 @@ def materialize_discovery_preview(
         "persisted": persisted,
         "included": len(paper_ids),
         "paper_ids": paper_ids,
-        "candidate_count": len(candidates),
+        "candidate_count": len(candidates) - len(processed_ids),
+        "discovery_limit": int(request.get("discovery_limit") or len(candidates)),
+        "processing_limit": effective_limit,
+        "processed_skipped": len(processed_ids) + int(
+            (payload.get("metrics") or {}).get("unique_processed_works_skipped") or 0
+        ),
         "actual_cost_usd": payload.get("actual_cost_usd", 0),
         "phase_results": payload.get("phase_results", {}),
         "stop_reason": payload.get("stop_reason"),
@@ -547,15 +626,6 @@ def _resolve_topics(
     if topic_names and len(resolved) < min(12, len(topic_names)):
         warnings.append(f"Resolved {len(resolved)} of {min(12, len(topic_names))} priority topic names.")
     return resolved, round(cost, 6), calls, warnings, budget_hit, provider_failed
-
-
-def _ready_count(fetched: list[dict[str, Any]], records: list[Any]) -> int:
-    candidates = rank_strategy_candidates(
-        fetched,
-        [record.um_dataset_id for record in records],
-        processing_limit=max(1, len(fetched)),
-    )
-    return sum(bool(candidate["pipeline_ready"]) for candidate in candidates)
 
 
 def _paper_id(item: dict[str, Any]) -> str:
