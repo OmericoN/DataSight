@@ -46,6 +46,9 @@ def bootstrap_high_throughput_run(
 ) -> dict[str, Any]:
     if pipeline_run_id is None:
         raise ValueError("pipeline_run_id is required for high-throughput bootstrap.")
+    with PipelineRepository() as repo:
+        run = repo.get_pipeline_run(pipeline_run_id)
+        validated_target = bool((run or {}).get("config", {}).get("validated_pdf_target"))
     result = services.discover_publications(
         query="preview-backed discovery",
         limit=processing_limit,
@@ -57,13 +60,20 @@ def bootstrap_high_throughput_run(
     payload = result.get("payload", {})
     raw_paper_ids = payload.get("paper_ids", []) if isinstance(payload, dict) else []
     paper_ids = [paper_id for paper_id in raw_paper_ids if isinstance(paper_id, str)]
+    if validated_target:
+        services.download_pdf_batch(processing_limit, overwrite, pipeline_run_id)
     with PipelineRepository() as repo:
+        if validated_target:
+            paper_ids = repo.included_discovery_paper_ids(pipeline_run_id)
         item_ids = repo.create_pipeline_items(pipeline_run_id, paper_ids)
-        queued = (
-            repo.queue_item_stage_for_run(pipeline_run_id, PipelineStage.DOWNLOAD_PDF)
-            if item_ids
-            else 0
-        )
+        if validated_target:
+            repo.cursor.execute("""
+                UPDATE pipeline_item_stages SET status='successful', finished_at=now(), updated_at=now()
+                WHERE pipeline_item_id=ANY(%s) AND stage='download_pdf' AND status='pending'
+            """, (item_ids,))
+            queued = repo.queue_item_stage_for_run(pipeline_run_id, PipelineStage.GROBID_CONVERT)
+        else:
+            queued = repo.queue_item_stage_for_run(pipeline_run_id, PipelineStage.DOWNLOAD_PDF) if item_ids else 0
     return {
         "pipeline_run_id": pipeline_run_id,
         "items": len(item_ids),

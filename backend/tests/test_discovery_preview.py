@@ -11,6 +11,12 @@ from datasight.interfaces.api.schemas import DiscoveryPreviewResponse
 
 
 class FakeRepository:
+    def lock_pool_selection(self, *, session=False):
+        pass
+
+    def active_pool_claims(self, paper_ids, run_id):
+        return set()
+
     saved_preview: dict | None = None
     records: list[UMDatasetRecord] = []
 

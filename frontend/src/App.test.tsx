@@ -587,11 +587,11 @@ describe("App routed workflow", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     const processHelp = screen.getByRole("button", { name: "About Process now" });
     fireEvent.pointerMove(processHelp, { pointerType: "mouse" });
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("from the completed pool");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Target number of validated PDFs");
     fireEvent.keyDown(processHelp, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
     fireEvent.focus(processHelp);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("from the completed pool");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("from the reviewed pool");
     fireEvent.blur(processHelp);
     fireEvent.click(screen.getByRole("link", { name: /^Runs/ }));
 

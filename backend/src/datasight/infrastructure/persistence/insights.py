@@ -29,6 +29,8 @@ class InsightRepositoryMixin:
                 COALESCE(pr.config->>'discovery_mode', 'unrecorded') AS discovery_mode,
                 COALESCE(dc.evidence_reasons, ARRAY[]::TEXT[]) AS discovery_methods,
                 COALESCE(
+                    CASE WHEN pr.config->>'validated_pdf_target'='true'
+                         THEN dc.raw->>'pdf_sha256' IS NOT NULL END,
                     item_progress.pdf_downloaded,
                     EXISTS (
                         SELECT 1 FROM artifacts artifact
@@ -36,6 +38,8 @@ class InsightRepositoryMixin:
                     )
                 ) AS pdf_downloaded,
                 COALESCE(
+                    CASE WHEN pr.config->>'validated_pdf_target'='true'
+                         THEN dc.raw->>'tei_xml_sha256' IS NOT NULL END,
                     item_progress.grobid_converted,
                     EXISTS (
                         SELECT 1 FROM artifacts artifact
@@ -43,6 +47,8 @@ class InsightRepositoryMixin:
                     )
                 ) AS grobid_converted,
                 COALESCE(
+                    CASE WHEN pr.config->>'validated_pdf_target'='true'
+                         THEN dc.raw->>'markdown_sha256' IS NOT NULL END,
                     item_progress.document_rendered,
                     EXISTS (
                         SELECT 1 FROM artifacts artifact

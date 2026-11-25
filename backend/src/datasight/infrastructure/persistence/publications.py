@@ -232,7 +232,7 @@ class PublicationRepositoryMixin:
             SELECT p.paper_id AS "paperId", p.title, pdf.path AS pdf_path
             FROM publications p
             JOIN LATERAL (
-                SELECT path
+                SELECT path, sha256
                 FROM artifacts
                 WHERE publication_id = p.id AND artifact_type = 'pdf'
                 ORDER BY created_at DESC, id DESC
@@ -241,7 +241,9 @@ class PublicationRepositoryMixin:
             WHERE TRUE
         """
         params: list[Any] = []
-        query, params = scope_to_preview_candidates(query, params, pipeline_run_id)
+        query, params = scope_to_preview_candidates(
+            query, params, pipeline_run_id, artifact_type="pdf", artifact_sha_sql="pdf.sha256",
+        )
         query += " ORDER BY p.id"
         if limit is not None:
             query += " LIMIT %s"
@@ -256,7 +258,7 @@ class PublicationRepositoryMixin:
             SELECT p.paper_id AS "paperId", p.title, xml.path AS xml_path
             FROM publications p
             JOIN LATERAL (
-                SELECT path
+                SELECT path, sha256
                 FROM artifacts
                 WHERE publication_id = p.id AND artifact_type = 'tei_xml'
                 ORDER BY created_at DESC, id DESC
@@ -265,7 +267,9 @@ class PublicationRepositoryMixin:
             WHERE TRUE
         """
         params: list[Any] = []
-        query, params = scope_to_preview_candidates(query, params, pipeline_run_id)
+        query, params = scope_to_preview_candidates(
+            query, params, pipeline_run_id, artifact_type="tei_xml", artifact_sha_sql="xml.sha256",
+        )
         query += " ORDER BY p.id"
         if limit is not None:
             query += " LIMIT %s"

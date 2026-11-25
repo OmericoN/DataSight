@@ -217,6 +217,8 @@ class DiscoveryCandidateSummary(BaseModel):
     pipeline_ready: bool
     included: bool
     exclusion_reason: str | None = None
+    download_status: Literal["not_attempted", "downloaded", "failed"] | None = None
+    download_failure_category: str | None = None
 
 
 class DiscoveryPreviewResponse(BaseModel):

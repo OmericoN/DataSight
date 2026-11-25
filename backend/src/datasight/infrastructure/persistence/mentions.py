@@ -68,7 +68,9 @@ class MentionRepositoryMixin:
         params: list[Any] = [value for value in (render_profile, renderer_version) if value]
         if not include_cached:
             params.append(detector_version)
-        query, params = scope_to_preview_candidates(query, params, pipeline_run_id)
+        query, params = scope_to_preview_candidates(
+            query, params, pipeline_run_id, artifact_type="markdown", artifact_sha_sql="md.sha256",
+        )
         query += " ORDER BY p.id"
         if limit is not None:
             query += " LIMIT %s"

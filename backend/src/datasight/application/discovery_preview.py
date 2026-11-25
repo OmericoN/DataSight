@@ -534,12 +534,16 @@ def materialize_discovery_preview(
         for candidate in candidates
     ]
     with PipelineRepository() as repo:
+        repo.lock_pool_selection(session=True)
         processed_ids = repo.processed_discovery_paper_ids(candidate_ids, pipeline_run_id)
+        claimed = repo.active_pool_claims(candidate_ids, pipeline_run_id)
         included = 0
         for candidate, paper_id in zip(candidates, candidate_ids, strict=True):
             candidate["included"] = False
             if paper_id in processed_ids:
                 candidate["exclusion_reason"] = "Already processed"
+            elif paper_id in claimed:
+                candidate["exclusion_reason"] = "Claimed by another run"
             elif paper_id in excluded:
                 candidate["exclusion_reason"] = "Excluded in preview"
             elif not candidate.get("pipeline_ready"):

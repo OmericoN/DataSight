@@ -100,7 +100,7 @@ def test_artifact_persistence_records_hash_version_metrics_and_downloadability(t
         quality_metrics={"attempts": 1},
     )
 
-    assert repo.persist_download_results([result]) == 1
+    assert repo.persist_download_results([result], pipeline_run_id=9) == 1
 
     artifact_query, artifact_params = next(
         (query, params) for query, params in cursor.executed if "INSERT INTO artifacts" in query
@@ -110,8 +110,8 @@ def test_artifact_persistence_records_hash_version_metrics_and_downloadability(t
     assert artifact_params[-1].adapted["producer_version"] == "pdf-downloader-v2"
     download_query, download_params = cursor.executed[-1]
     assert "download_status" in download_query
-    assert download_params == ("downloaded", None, 1)
-    assert conn.commits == 2
+    assert download_params == ("downloaded", None, "known-hash", 1, 9)
+    assert conn.commits == 1
 
 
 def test_sync_um_datasets_upserts_then_removes_stale_records():
@@ -235,7 +235,7 @@ def test_preview_backed_batch_queries_scope_to_selected_candidates():
     assert "NULLIF(pr.config->>'preview_id', '') IS NOT NULL" in query
     assert "dc.included" in query
     assert "dc.pipeline_ready" in query
-    assert params == [9, 9, 25]
+    assert params == [9, 9, 9, 25]
 
 
 def test_detection_selection_is_keyed_by_render_hash_and_detector_version():
@@ -257,7 +257,7 @@ def test_detection_selection_is_keyed_by_render_hash_and_detector_version():
     assert "mention_detection_runs" in query
     assert "dr.render_sha256 = md.sha256" in query
     assert "dr.status = 'successful'" in query
-    assert params == ["rules-v3", 9, 9, 10]
+    assert params == ["rules-v3", 9, "markdown_sha256", 9, 9, 9, 10]
 
 
 def test_zero_candidate_detection_is_persisted_as_successful_completion():
@@ -600,6 +600,7 @@ def test_high_throughput_finalization_is_idempotent():
         {"status": "running"},
         {"count": 0},
         {"failed": 0, "skipped": 0},
+        None,  # No partial PDF batch
         {"status": "successful"},
         {"locked": True},
         {"status": "successful"},

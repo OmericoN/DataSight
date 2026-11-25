@@ -259,6 +259,7 @@ def _run_config(
         "render_profile": render_profile,
         "detector_version": SCREENING_VERSION,
         "extraction": extraction_configuration(render_profile=render_profile),
+        "validated_pdf_target": True,
         "processing_limit": processing_limit,
         "excluded_candidate_ids": excluded_candidate_ids or [],
         "output": output,

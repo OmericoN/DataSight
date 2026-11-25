@@ -109,13 +109,17 @@ class PipelineItemRepositoryMixin:
             FROM pipeline_items pi
             JOIN pipeline_runs pr ON pr.id = pi.pipeline_run_id
             JOIN publications p ON p.id = pi.publication_id
+            LEFT JOIN discovery_candidates dc ON dc.pipeline_run_id=pr.id AND dc.publication_id=p.id
             LEFT JOIN artifacts pdf
               ON pdf.publication_id = p.id AND pdf.artifact_type = 'pdf'
+              AND (pr.config->>'validated_pdf_target' IS DISTINCT FROM 'true' OR pdf.sha256=dc.raw->>'pdf_sha256')
             LEFT JOIN artifacts xml
               ON xml.publication_id = p.id AND xml.artifact_type = 'tei_xml'
+              AND (pr.config->>'validated_pdf_target' IS DISTINCT FROM 'true' OR xml.sha256=dc.raw->>'tei_xml_sha256')
             LEFT JOIN LATERAL (
                 SELECT a.* FROM artifacts a
                 WHERE a.publication_id = p.id AND a.artifact_type = 'markdown'
+                  AND (pr.config->>'validated_pdf_target' IS DISTINCT FROM 'true' OR a.sha256=dc.raw->>'markdown_sha256')
                   AND (pr.config->>'render_profile' IS NULL OR a.metadata->>'profile' = pr.config->>'render_profile')
                   AND (pr.config->>'renderer_version' IS NULL OR a.metadata->>'producer_version' = pr.config->>'renderer_version')
                 ORDER BY a.created_at DESC, a.id DESC LIMIT 1
@@ -361,6 +365,13 @@ class PipelineItemRepositoryMixin:
             return None
 
         status = self.high_throughput_outcome(pipeline_run_id)
+        if status == "successful":
+            self.cursor.execute("""
+                SELECT 1 FROM stage_runs WHERE pipeline_run_id=%s AND stage='download_pdf'
+                AND status IN ('failed','completed_with_errors')
+            """, (pipeline_run_id,))
+            if self.cursor.fetchone():
+                status = "completed_with_errors"
         self.finish_pipeline_run(pipeline_run_id, status)
         return status
 

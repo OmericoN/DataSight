@@ -72,26 +72,30 @@ def discover_publications(
         if pipeline_run_id is None:
             raise ValueError("pipeline_run_id is required when materializing a discovery preview.")
         with PipelineRepository() as repo:
+            # Keep a redelivered task from rematerializing a pool already in use.
+            repo.cursor.execute("SELECT pg_advisory_lock(73017,%s)", (pipeline_run_id,))
+            for prior in repo.list_stage_runs(pipeline_run_id):
+                if prior["stage"] == PipelineStage.DISCOVER and prior["status"] in {"successful", "skipped"}:
+                    return prior["metrics"]
             repo.record_stage_start(PipelineStage.DISCOVER, pipeline_run_id)
-        materialized = materialize_discovery_preview(
-            preview_id=preview_id,
-            pipeline_run_id=pipeline_run_id,
-            processing_limit=processing_limit or limit,
-            excluded_candidate_ids=excluded_candidate_ids,
-        )
-        processed_skipped = materialized["processed_skipped"]
-        result = _stage_result(
-            PipelineStage.DISCOVER,
-            "successful" if materialized["paper_ids"] else "skipped",
-            int(materialized["persisted"]),
-            (
-                f"Filled {materialized['candidate_count']} of {materialized['discovery_limit']} candidate pool slots "
-                f"and queued {materialized['included']} of {materialized['processing_limit']} requested papers."
-                + (f" Skipped {processed_skipped} previously processed publications." if processed_skipped else "")
-            ),
-            materialized,
-        )
-        with PipelineRepository() as repo:
+            materialized = materialize_discovery_preview(
+                preview_id=preview_id,
+                pipeline_run_id=pipeline_run_id,
+                processing_limit=processing_limit or limit,
+                excluded_candidate_ids=excluded_candidate_ids,
+            )
+            processed_skipped = materialized["processed_skipped"]
+            result = _stage_result(
+                PipelineStage.DISCOVER,
+                "successful" if materialized["paper_ids"] else "skipped",
+                int(materialized["persisted"]),
+                (
+                    f"Filled {materialized['candidate_count']} of {materialized['discovery_limit']} candidate pool slots "
+                    f"and queued {materialized['included']} of {materialized['processing_limit']} requested papers."
+                    + (f" Skipped {processed_skipped} previously processed publications." if processed_skipped else "")
+                ),
+                materialized,
+            )
             repo.record_stage_result(
                 PipelineStage.DISCOVER,
                 result["status"],
@@ -202,11 +206,34 @@ def download_pdf_batch(
     pipeline_run_id: int | None = None,
 ) -> dict[str, Any]:
     with PipelineRepository() as repo:
+        run = repo.get_pipeline_run(pipeline_run_id) if pipeline_run_id is not None else None
+        config = (run or {}).get("config") or {}
+        if pipeline_run_id is not None and config.get("validated_pdf_target"):
+            # Serialize redelivery of the same run across the downloader's per-paper commits.
+            repo.cursor.execute("SELECT pg_advisory_lock(73016,%s)", (pipeline_run_id,))
+            repo.record_stage_start(PipelineStage.DOWNLOAD_PDF, pipeline_run_id)
+            target = int(config["processing_limit"])
+            downloader = PDFDownloader(output_dir=PDF_DIR)
+            while paper := repo.next_pool_download(pipeline_run_id, target):
+                results = downloader.download_papers([paper], overwrite=overwrite)
+                repo.persist_download_results(results, pipeline_run_id)
+            counts = repo.pool_download_counts(pipeline_run_id)
+            shortfall = target - counts["validated"]
+            result = _stage_result(
+                PipelineStage.DOWNLOAD_PDF, "completed_with_errors" if shortfall else "successful",
+                counts["validated"],
+                f"Validated {counts['validated']} of {target} requested PDFs. "
+                f"Attempted {counts['attempted']}, including {counts['replacements']} replacements. "
+                f"{counts['failed']} downloads failed. Unfilled slots: {shortfall}.",
+                {**counts, "requested": target, "unfilled": shortfall, "successful": counts["validated"]},
+            )
+            repo.record_stage_result(PipelineStage.DOWNLOAD_PDF, result["status"], result, pipeline_run_id)
+            return result
         repo.record_stage_start(PipelineStage.DOWNLOAD_PDF, pipeline_run_id)
         downloader = PDFDownloader(output_dir=PDF_DIR)
         papers = repo.get_papers_needing_download(limit=limit, pipeline_run_id=pipeline_run_id)
         results = downloader.download_papers(papers, overwrite=overwrite)
-        repo.persist_download_results(results)
+        repo.persist_download_results(results, pipeline_run_id)
         result = _result_from_operation(PipelineStage.DOWNLOAD_PDF, results)
         repo.record_stage_result(PipelineStage.DOWNLOAD_PDF, result["status"], result, pipeline_run_id)
         return result
@@ -223,7 +250,7 @@ def grobid_convert_batch(
         converter = GrobidConverter(output_dir=XML_DIR)
         papers = repo.get_papers_needing_conversion(limit=limit, pipeline_run_id=pipeline_run_id)
         results = converter.convert_papers(papers, overwrite=overwrite, delete_pdf=delete_pdf)
-        repo.persist_conversion_results(results)
+        repo.persist_conversion_results(results, pipeline_run_id)
         result = _result_from_operation(PipelineStage.GROBID_CONVERT, results)
         repo.record_stage_result(PipelineStage.GROBID_CONVERT, result["status"], result, pipeline_run_id)
         return result
@@ -243,7 +270,7 @@ def render_document_batch(
         results = render_papers(
             papers, overwrite=overwrite, profile=profile, version=version,
         )
-        repo.persist_render_results(results)
+        repo.persist_render_results(results, pipeline_run_id)
         result = _result_from_operation(PipelineStage.RENDER_DOCUMENT, results)
         repo.record_stage_result(PipelineStage.RENDER_DOCUMENT, result["status"], result, pipeline_run_id)
         return result
@@ -432,7 +459,7 @@ def download_pipeline_item(
             overwrite=overwrite,
             alternative_urls=pdf_locations(context.get('open_access_url'), raw),
         )
-        repo.persist_download_results([result])
+        repo.persist_download_results([result], context["pipeline_run_id"])
         status = "successful" if result.success else "failed"
         metrics = _json_safe(vars(result))
         repo.finish_item_stage(item_id, PipelineStage.DOWNLOAD_PDF, status, metrics, result.error)
@@ -469,7 +496,7 @@ def grobid_convert_pipeline_item(
             message = f"GROBID conversion error: {exc}"
             repo.finish_item_stage(item_id, PipelineStage.GROBID_CONVERT, "failed", {"message": message}, str(exc))
             return _item_result(PipelineStage.GROBID_CONVERT, "failed", item_id, message)
-        repo.persist_conversion_results([result])
+        repo.persist_conversion_results([result], context["pipeline_run_id"])
         status = "successful" if result.success else "failed"
         metrics = _json_safe(vars(result))
         repo.finish_item_stage(item_id, PipelineStage.GROBID_CONVERT, status, metrics, result.error)
@@ -507,13 +534,13 @@ def render_pipeline_item(
                 paper_id=context["paper_id"],
                 overwrite=overwrite,
                 profile=effective_profile,
-            version=context.get("renderer_version") or RENDERER_VERSION,
+                version=context.get("renderer_version") or RENDERER_VERSION,
             )
         except Exception as exc:
             message = f"Render error: {exc}"
             repo.finish_item_stage(item_id, PipelineStage.RENDER_DOCUMENT, "failed", {"message": message}, str(exc))
             return _item_result(PipelineStage.RENDER_DOCUMENT, "failed", item_id, message)
-        repo.persist_render_results([result])
+        repo.persist_render_results([result], context["pipeline_run_id"])
         status = "successful" if result.success else "failed"
         metrics = _json_safe(vars(result))
         repo.finish_item_stage(item_id, PipelineStage.RENDER_DOCUMENT, status, metrics, result.error)

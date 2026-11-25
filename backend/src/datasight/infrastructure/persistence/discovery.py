@@ -10,15 +10,26 @@ import psycopg2.extras
 
 from datasight.domain.candidate_detection import SCREENING_VERSION
 
-
 def scope_to_preview_candidates(
     query: str,
     params: list[Any],
     pipeline_run_id: int | None,
+    *,
+    artifact_type: str | None = None,
+    artifact_sha_sql: str | None = None,
 ) -> tuple[str, list[Any]]:
     """Restrict preview-backed runs to the candidates selected for that run."""
     if pipeline_run_id is None:
         return query, params
+    if artifact_type and artifact_sha_sql:
+        query += f"""
+            AND NOT EXISTS (
+                SELECT 1 FROM discovery_candidates dc JOIN pipeline_runs pr ON pr.id=dc.pipeline_run_id
+                WHERE pr.id=%s AND dc.publication_id=p.id AND pr.config->>'validated_pdf_target'='true'
+                  AND dc.raw->>%s IS DISTINCT FROM {artifact_sha_sql}
+            )
+        """
+        params = [*params, pipeline_run_id, artifact_type + "_sha256"]
     query += """
         AND (
             NOT EXISTS (
@@ -54,6 +65,78 @@ def scope_to_preview_candidates(
 class DiscoveryRepositoryMixin:
     conn: Any
     cursor: Any
+
+    def lock_pool_selection(self, *, session: bool = False) -> None:
+        # Materialization spans commits. Its session lock is released when the repository closes.
+        lock = "pg_advisory_lock" if session else "pg_advisory_xact_lock"
+        self.cursor.execute(f"SELECT {lock}(73015, 0)")
+
+    def active_pool_claims(self, paper_ids: Iterable[str], run_id: int) -> set[str]:
+        self.cursor.execute("""
+            SELECT p.paper_id FROM discovery_candidates dc
+            JOIN publications p ON p.id=dc.publication_id
+            JOIN pipeline_runs pr ON pr.id=dc.pipeline_run_id
+            WHERE p.paper_id=ANY(%s) AND dc.included AND pr.id<>%s
+              AND pr.status IN ('queued','running','started','interrupted')
+        """, (list(paper_ids), run_id))
+        return {row["paper_id"] for row in self.cursor.fetchall()}
+
+    def next_pool_download(self, run_id: int, target: int) -> dict[str, Any] | None:
+        self.lock_pool_selection()
+        self.cursor.execute("""
+            UPDATE discovery_candidates SET included=false, exclusion_reason='PDF unavailable'
+            WHERE pipeline_run_id=%s AND included AND download_status='failed'
+        """, (run_id,))
+        self.cursor.execute("""
+            SELECT count(*) AS n FROM discovery_candidates
+            WHERE pipeline_run_id=%s AND included AND download_status='downloaded'
+        """, (run_id,))
+        if self.cursor.fetchone()["n"] >= target:
+            self.conn.commit()
+            return None
+        self.cursor.execute("""
+            SELECT dc.id, p.paper_id AS "paperId"
+            FROM discovery_candidates dc JOIN publications p ON p.id=dc.publication_id
+            WHERE dc.pipeline_run_id=%s AND dc.pipeline_ready AND dc.download_status='not_attempted'
+              AND (dc.included OR dc.exclusion_reason='Processing limit reached')
+            ORDER BY dc.included DESC, dc.id
+        """, (run_id,))
+        rows = self.cursor.fetchall()
+        ids = [r["paperId"] for r in rows]
+        unavailable = self.processed_discovery_paper_ids(ids, run_id) | self.active_pool_claims(ids, run_id)
+        if unavailable:
+            self.cursor.execute("""
+                UPDATE discovery_candidates dc SET included=false, exclusion_reason='Processed or claimed by another run'
+                FROM publications p WHERE dc.pipeline_run_id=%s AND dc.publication_id=p.id AND p.paper_id=ANY(%s)
+                  AND (dc.included OR dc.exclusion_reason='Processing limit reached') AND dc.download_status='not_attempted'
+            """, (run_id, list(unavailable)))
+        candidate = next((r for r in rows if r["paperId"] not in unavailable), None)
+        selected = None
+        if candidate:
+            self.cursor.execute("""
+                UPDATE discovery_candidates SET included=true,
+                    raw=raw || jsonb_build_object('replacement', COALESCE(raw->'replacement',to_jsonb(NOT included))),
+                    exclusion_reason=NULL WHERE id=%s
+            """, (candidate["id"],))
+            self.cursor.execute("""
+                SELECT p.paper_id AS "paperId", dc.raw->>'title' AS title,
+                       dc.raw->>'open_access_url' AS url, COALESCE(dc.raw->'pdf_locations',p.raw) AS raw
+                FROM discovery_candidates dc JOIN publications p ON p.id=dc.publication_id
+                WHERE dc.id=%s
+            """, (candidate["id"],))
+            selected = self.cursor.fetchone()
+        self.conn.commit()
+        return dict(selected) if selected else None
+
+    def pool_download_counts(self, run_id: int) -> dict[str, int]:
+        self.cursor.execute("""
+            SELECT count(*) FILTER (WHERE download_status<>'not_attempted') AS attempted,
+                   count(*) FILTER (WHERE included AND download_status='downloaded') AS validated,
+                   count(*) FILTER (WHERE download_status='failed') AS failed,
+                   count(*) FILTER (WHERE download_status<>'not_attempted' AND raw->>'replacement'='true') AS replacements
+            FROM discovery_candidates WHERE pipeline_run_id=%s
+        """, (run_id,))
+        return dict(self.cursor.fetchone())
 
     def processed_discovery_paper_ids(
         self, paper_ids: Iterable[str], pipeline_run_id: int | None = None,
@@ -194,6 +277,11 @@ class DiscoveryRepositoryMixin:
                 "source_url": candidate.get("source_url") or candidate.get("url"),
                 "open_access_url": candidate.get("open_access_url"),
                 "oa_status": candidate.get("oa_status"),
+                "pdf_locations": {
+                    key: candidate["raw"][key]
+                    for key in ("locations", "best_oa_location", "primary_location")
+                    if isinstance(candidate.get("raw"), dict) and key in candidate["raw"]
+                },
             }
             self.cursor.execute(
                 """
@@ -262,7 +350,9 @@ class DiscoveryRepositoryMixin:
                 dc.matched_um_dataset_ids,
                 dc.pipeline_ready,
                 dc.included,
-                dc.exclusion_reason
+                dc.exclusion_reason,
+                dc.download_status,
+                dc.download_failure_category
             FROM discovery_candidates dc
             JOIN publications p ON p.id = dc.publication_id
             WHERE dc.pipeline_run_id = %s

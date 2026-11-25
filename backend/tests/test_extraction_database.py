@@ -14,6 +14,7 @@ from sqlalchemy.engine import make_url
 
 from datasight import config
 from datasight.domain.extraction import DatasetEntry, Evidence, Occurrence, PublicationExtraction
+from datasight.domain.results import ConversionResult, DownloadResult, RenderResult
 from datasight.infrastructure.persistence.repository import PipelineRepository
 from datasight.application import llm_extraction, pipeline_services
 from datasight.domain.candidate_detection import SCREENING_VERSION
@@ -149,6 +150,57 @@ def test_discovery_skips_terminal_publications_and_keeps_unfinished_ones(databas
     assert repo.processed_discovery_paper_ids(["W1"], prior_run) == set()
 
 
+def test_pdf_pool_replaces_failed_download_and_preserves_lineage_across_connections(database, tmp_path):
+    repo = database
+    old_run = repo.create_pipeline_run("previous", {})
+    run = repo.create_pipeline_run("replacement test", {"preview_id": "preview", "validated_pdf_target": True})
+    candidates = [
+        {"paperId": "W1", "included": True, "exclusion_reason": None},
+        {"paperId": "W2", "included": False, "exclusion_reason": "Excluded in preview"},
+        {"paperId": "W3", "included": False, "exclusion_reason": "Processing limit reached"},
+        {"paperId": "W4", "included": False, "exclusion_reason": "Processing limit reached"},
+    ]
+    for candidate in candidates:
+        candidate.update(title=candidate["paperId"], pipeline_ready=True, open_access_url="https://example.org/paper.pdf")
+    repo.upsert_publications(candidates, source="test")
+    repo.persist_discovery_candidates(old_run, candidates[:1])
+    repo.finish_pipeline_run(old_run, "completed_with_errors")
+    repo.persist_discovery_candidates(run, candidates)
+
+    assert repo.next_pool_download(run, 1)["paperId"] == "W1"
+    repo.persist_download_results([DownloadResult("W1", False, "Access blocked", failure_category="access_blocked")], run)
+    assert repo.next_pool_download(run, 1)["paperId"] == "W3"
+    # A restarted worker must reclaim the same uncommitted slot.
+    dsn = make_url(config.POSTGRES_URI).set(drivername="postgresql").render_as_string(hide_password=False)
+    with PipelineRepository(dsn) as restarted:
+        assert restarted.next_pool_download(run, 1)["paperId"] == "W3"
+        pdf = tmp_path / "W3.pdf"
+        pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
+        pdf_hash = sha256(pdf.read_bytes()).hexdigest()
+        restarted.persist_download_results([DownloadResult("W3", True, "Validated", filepath=pdf, sha256=pdf_hash)], run)
+        assert restarted.next_pool_download(run, 1) is None
+        assert restarted.pool_download_counts(run) == {"attempted": 2, "validated": 1, "failed": 1, "replacements": 1}
+    assert repo.list_discovery_candidates(old_run)["items"][0]["download_status"] == "not_attempted"
+    assert repo.included_discovery_paper_ids(run) == ["W3"]
+    assert [paper["paperId"] for paper in repo.get_papers_needing_conversion(pipeline_run_id=run)] == ["W3"]
+
+    xml = tmp_path / "W3.xml"
+    xml.write_bytes(b"<TEI/>")
+    stale = ConversionResult("W3", True, "Converted", xml_path=xml, source_sha256="other PDF")
+    assert repo.persist_conversion_results([stale], run) == 0
+    assert not stale.success
+    assert not repo.get_papers_needing_rendering(pipeline_run_id=run)
+    conversion = ConversionResult("W3", True, "Converted", xml_path=xml, source_sha256=pdf_hash)
+    assert repo.persist_conversion_results([conversion], run) == 1
+    assert [paper["paperId"] for paper in repo.get_papers_needing_rendering(pipeline_run_id=run)] == ["W3"]
+    markdown = tmp_path / "W3.md"
+    markdown.write_text("Run-verified content", encoding="utf8")
+    rendered = RenderResult("W3", xml, markdown, True, "Rendered", source_sha256=sha256(xml.read_bytes()).hexdigest())
+    assert not repo.get_markdown_artifacts_needing_detection(pipeline_run_id=run)
+    assert repo.persist_render_results([rendered], run) == 1
+    assert [row["paper_id"] for row in repo.get_markdown_artifacts_needing_detection(pipeline_run_id=run)] == ["W3"]
+
+
 def test_distinct_papers_share_run_lock_and_only_original_task_reclaims(database):
     repo = database
     run1, _, publication = seed(repo)
@@ -258,7 +310,7 @@ def test_screening_controls_batch_eligibility_and_item_dispatch(database, tmp_pa
             pass
 
     monkeypatch.setattr(pipeline_services, "GatewayClient", DecisionClient)
-    monkeypatch.setattr(pipeline_services, "PipelineRepository", lambda: PipelineRepository(repo.conn.dsn))
+    monkeypatch.setattr(pipeline_services, "PipelineRepository", lambda: PipelineRepository(make_url(config.POSTGRES_URI).set(drivername="postgresql").render_as_string(hide_password=False)))
     batch = pipeline_services.detect_mentions_batch(pipeline_run_id=run_id)
     assert batch["count"] == 1
     assert batch["payload"]["new_decisions"] == 1

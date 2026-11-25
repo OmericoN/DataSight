@@ -199,7 +199,7 @@ export default function DiscoveryLaunchPage() {
               />
               <LabeledInput
                 label="Process now"
-                hint={mode === "random" ? "Select papers with a PDF link from the completed pool in seeded random order." : "Select the highest-ranked papers with a PDF link from the completed pool."}
+                hint="Target number of validated PDFs. Failed downloads are replaced by eligible papers from the reviewed pool."
                 type="number" min={1} max={discoveryLimit} value={processingLimit} onChange={(event) => setProcessingLimit(Math.min(Number(event.target.value), discoveryLimit))}
               />
               {mode === "catalog_funnel" ? <LabeledInput className="@xs:col-span-2" label="Optional focus" hint="Applies to the final topic and keyword search." placeholder="e.g. health, education, FAIR data" value={focusQuery} onChange={(event) => setFocusQuery(event.target.value)} /> : null}
@@ -387,8 +387,12 @@ function CandidatePreview({ mode, previewId, candidates, queuedCandidates, exclu
         <Table className="min-w-[940px]"><TableHeader><TableRow><TableHead>Include</TableHead><TableHead>Paper</TableHead><TableHead>{mode === "random" ? "Sampling basis" : "Evidence tier"}</TableHead><TableHead>Strength</TableHead><TableHead>{mode === "random" ? "Selection reason" : "Evidence"}</TableHead><TableHead>Access</TableHead></TableRow></TableHeader>
           <TableBody>{candidates.map((candidate) => {
             const included = queuedIds.has(candidate.paper_id);
+            const eligible = candidate.pipeline_ready && !excludedIds.has(candidate.paper_id);
             return <TableRow key={candidate.paper_id}>
-              <TableCell><Switch aria-label={`Include ${candidate.title ?? candidate.paper_id}`} checked={included} disabled={!included && !excludedIds.has(candidate.paper_id)} onCheckedChange={(checked) => onToggle(candidate, checked)} /></TableCell>
+              <TableCell>
+                <Switch aria-label={`Include ${candidate.title ?? candidate.paper_id}`} checked={eligible} disabled={!candidate.pipeline_ready} onCheckedChange={(checked) => onToggle(candidate, checked)} />
+                {eligible && !included ? <span className="ml-2 text-xs">Reserve</span> : null}
+              </TableCell>
               <TableCell className="max-w-[340px]"><button type="button" className="block w-full text-left" onClick={() => onSelect(candidate)}><span className="block truncate font-medium hover:underline">{candidate.title || "Untitled OpenAlex work"}</span><span className="block font-mono text-xs text-muted-foreground">{candidate.paper_id}</span></button></TableCell>
               <TableCell><Badge variant={candidate.evidence_tier === "direct" ? "secondary" : "outline"} className="capitalize">{mode === "random" ? "Random" : candidate.evidence_tier}</Badge></TableCell>
               <TableCell>{mode === "random" ? "Not scored" : `${Math.round(candidate.candidate_strength)}/100`}</TableCell>
