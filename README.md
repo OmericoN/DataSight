@@ -17,11 +17,15 @@
 
 <br>
 
-DataSight finds dataset references that are easy to miss in scholarly publications. It discovers open-access papers, downloads PDFs, converts them into structured text, detects dataset mentions, and matches those mentions against Maastricht University dataset metadata.
+DataSight finds dataset references that are easy to miss in scholarly publications. It discovers papers through OpenAlex and extracts source-backed evidence of dataset use or creation from their PDFs. The project also includes tools for comparing extracted mentions with Maastricht University dataset metadata.
 
 ## Processing Pipeline
 
-![DataSight Processing Pipeline](assets/datasight-pipeline.png)
+1. **Discover and review.** Build a candidate pool using the UM catalog, a seeded random sample, or a manual OpenAlex query. Previously processed publications are filtered out before the pool is filled.
+2. **Validate and render.** The **Process now** target is a count of validated PDFs. If a download fails, the run tries the next eligible reserve from the reviewed pool and reports any shortfall. GROBID converts validated PDFs to TEI XML, which DataSight renders as Markdown.
+3. **Screen and extract.** The model checks whether each paper plausibly used or created a dataset. Likely or uncertain cases proceed to evidence extraction, where results link back to exact passages.
+
+Automatic runs end at evidence extraction. The run page lets you inspect and export results.
 
 ## Why It Exists
 
@@ -29,48 +33,33 @@ Dataset reuse is often described in prose instead of cited cleanly in a bibliogr
 
 ## Requirements
 
-- Docker
-- uv
-- Bun
+- Docker with Compose
+- Bun and Node.js 22 for the frontend
+- uv for host-side Python development or CLI use
 
 ## Quick Start
 
 ### GUI
-Start the backend stack:
+Copy [`.env.example`](.env.example) to `.env` in the repository root. Set `OPENALEX_API_KEY` for discovery. Set `LLM_BASE_URL` and `LLM_API_KEY` for live screening and extraction. The [extraction guide](backend/LLM_EXTRACTION.md) describes the model and gateway settings.
+
+From the repository root, start the stack. Compose applies migrations before the API and workers start.
 
 ```powershell
-docker compose up -d postgres redis grobid
-docker compose run --rm migrate
-docker compose up api worker llm-worker
+docker compose up -d api worker llm-worker
 ```
 
-The `llm-worker` processes the LLM extraction queue.
-
-Open the API docs:
-
-```text
-http://localhost:8000/docs
-```
+The `worker` handles ingestion. The `llm-worker` handles screening and evidence extraction.
+Compose publishes the development ports on loopback. The API includes import and reset operations for trusted local use.
 
 Start the GUI in a second terminal:
 
 ```powershell
 cd frontend
-bun install
+bun install --frozen-lockfile
 bun run dev
 ```
 
-Open the GUI:
-
-```text
-http://localhost:5173
-```
-
-Check readiness:
-
-```powershell
-curl http://localhost:8000/api/v1/health
-```
+Open the [dashboard](http://localhost:5173), [API docs](http://localhost:8000/docs), or [readiness endpoint](http://localhost:8000/api/v1/health). Import the UM catalog before using catalog-based discovery. Put the input under `data/um_dataset` or select the source in the import workflow.
 
 
 ### CLI
@@ -87,16 +76,11 @@ uv run datasight discovery-preview --mode random --random-seed 42 --processing-l
 uv run datasight run-all --preview-id PREVIEW_UUID --processing-limit 25 --output storage/exports/insights.csv --mode enqueue
 ```
 
-Production full runs require an unexpired discovery preview from the adaptive funnel,
-seeded random sampler, or advanced manual query. Direct
-query-first discovery remains available only through the single-stage command
-for development diagnostics.
+Full runs require an unexpired discovery preview. Use the preview's ID in `run-all`. A processing limit override may reduce the preview's target. The `--output` argument remains part of the CLI command, while automatic runs publish their results to the database for inspection and export.
 
 
 ## Documentation
 
 - [LLM extraction, evidence schema, setup and evaluation](backend/LLM_EXTRACTION.md)
-- [API Usage](docs/API_USAGE.md)
-- [Why DataSight](docs/WHY_DATASIGHT.md)
-- [Technical Architecture](docs/TECHNICAL_ARCHITECTURE.md)
+- [Backend architecture and API entry points](backend/README.md)
 - [Contributing](CONTRIBUTING.md)

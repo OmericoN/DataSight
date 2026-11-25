@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     evaluation_export = subcommands.add_parser(
-        "evaluation-export", help="Export run-scoped papers and active rules-v3 windows"
+        "evaluation-export", help="Export run-scoped publications, extraction evidence, and request metrics"
     )
     evaluation_export.add_argument("--run-id", required=True, type=int)
     evaluation_export.add_argument("--output-dir", required=True)

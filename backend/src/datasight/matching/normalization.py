@@ -57,15 +57,3 @@ def catalog_link_key(value: str | None) -> str:
         return "doi:" + doi
     handle = re.fullmatch(r"(?:hdl:\s*)?(\d[\d.]*/\S+)", literal, re.I)
     return "hdl:" + handle[1] if handle else ""
-
-
-def token_set(value: str | None) -> set[str]:
-    return {token for token in normalize_text(value).split(" ") if token}
-
-
-def jaccard(left: str | None, right: str | None) -> float:
-    left_tokens = token_set(left)
-    right_tokens = token_set(right)
-    if not left_tokens or not right_tokens:
-        return 0.0
-    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)

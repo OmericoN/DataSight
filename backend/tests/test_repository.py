@@ -465,7 +465,7 @@ def test_record_stage_result_records_stage_event():
 
     assert "SELECT id, attempt_count" in cursor.executed[0][0]
     assert "INSERT INTO stage_runs" in cursor.executed[1][0]
-    event_query, event_params = cursor.executed[2]
+    event_query, event_params = cursor.executed[-1]
     assert "INSERT INTO pipeline_run_events" in event_query
     assert event_params[:4] == (9, "discover", "info", "Discovered 3 publications.")
     assert conn.commits == 1
@@ -485,7 +485,7 @@ def test_stage_start_is_committed_before_the_result_preserves_it():
     cursor.fetchone_results = [{"id": 10}]
     repo.record_stage_result("download_pdf", "successful", pipeline_run_id=9)
 
-    finish_query, _ = cursor.executed[-2]
+    finish_query, _ = cursor.executed[4]
     assert "started_at = COALESCE(started_at, statement_timestamp())" in finish_query
     assert "finished_at = statement_timestamp()" in finish_query
 

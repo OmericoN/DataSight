@@ -1,7 +1,8 @@
-"""Celery task entrypoints for high-throughput stage execution."""
+"""Celery task entrypoints for DataSight pipeline stages."""
 
 from __future__ import annotations
 
+from inspect import signature
 from typing import Any
 
 from celery.signals import task_failure
@@ -246,19 +247,13 @@ def mark_pipeline_run_failed(
 ) -> None:
     if sender is None or not str(getattr(sender, "name", "")).startswith("datasight."):
         return
-    pipeline_run_id = _extract_pipeline_run_id(args or (), kwargs or {})
-    if pipeline_run_id is None:
+    try:
+        arguments = signature(sender.run).bind_partial(*(args or ()), **(kwargs or {}))
+    except (AttributeError, TypeError, ValueError):
+        return
+    pipeline_run_id = arguments.arguments.get("pipeline_run_id")
+    if type(pipeline_run_id) is not int:
         return
     error = str(exception) if exception else f"Task failed: {task_id}"
     with PipelineRepository() as repo:
         repo.fail_pipeline_run(pipeline_run_id, error)
-
-
-def _extract_pipeline_run_id(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-    value = kwargs.get("pipeline_run_id")
-    if isinstance(value, int):
-        return value
-    for arg in reversed(args):
-        if isinstance(arg, int):
-            return arg
-    return None

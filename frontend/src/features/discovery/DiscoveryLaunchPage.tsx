@@ -32,8 +32,6 @@ import { ApiError, api, type DiscoveryCandidate, type DiscoveryPreviewRequest } 
 
 import { useLaunchJob } from "./LaunchJobProvider";
 
-const DEFAULT_OUTPUT = "storage/exports/insights.csv";
-const DEFAULT_UM_DATASETS = "data/um_dataset";
 type DiscoveryMode = "catalog_funnel" | "random" | "manual";
 
 export default function DiscoveryLaunchPage() {
@@ -49,8 +47,6 @@ export default function DiscoveryLaunchPage() {
   const [fromYear, setFromYear] = useState("");
   const [toYear, setToYear] = useState("");
   const [maxCost, setMaxCost] = useState(0.25);
-  const [outputPath, setOutputPath] = useState(DEFAULT_OUTPUT);
-  const [umDatasetsPath, setUmDatasetsPath] = useState(DEFAULT_UM_DATASETS);
   const [overwrite, setOverwrite] = useState(false);
   const [highThroughput, setHighThroughput] = useState(false);
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
@@ -129,8 +125,6 @@ export default function DiscoveryLaunchPage() {
       runRequest: {
         processing_limit: processingLimit,
         overwrite,
-        um_datasets_path: umDatasetsPath.trim() || null,
-        output_path: outputPath.trim() || DEFAULT_OUTPUT,
         strategy: highThroughput ? "high_throughput" : "standard",
         render_profile: "pruned",
       },
@@ -150,8 +144,6 @@ export default function DiscoveryLaunchPage() {
       runRequest: {
         processing_limit: processingLimit,
         overwrite,
-        um_datasets_path: umDatasetsPath.trim() || null,
-        output_path: outputPath.trim() || DEFAULT_OUTPUT,
         strategy: highThroughput ? "high_throughput" : "standard",
         render_profile: "pruned",
       },
@@ -216,14 +208,10 @@ export default function DiscoveryLaunchPage() {
             <AdvancedSettings
               highThroughput={highThroughput}
               maxCost={maxCost}
-              outputPath={outputPath}
               overwrite={overwrite}
-              umDatasetsPath={umDatasetsPath}
               onHighThroughput={setHighThroughput}
               onMaxCost={setMaxCost}
-              onOutputPath={setOutputPath}
               onOverwrite={setOverwrite}
-              onUmDatasetsPath={setUmDatasetsPath}
             />
             {mode === "catalog_funnel" && profile?.phases?.length ? (
               <SettingsDisclosure label="Smart discovery stages">
@@ -410,12 +398,17 @@ function CandidateSheet({ mode, candidate, onClose }: { mode: DiscoveryMode; can
   return <Sheet open={candidate !== null} onOpenChange={(open) => !open && onClose()}><SheetContent side="right" className="w-[94vw] max-w-[calc(100vw-1rem)] sm:max-w-xl"><SheetHeader><SheetTitle>{candidate?.title ?? "Candidate evidence"}</SheetTitle><SheetDescription>{candidate?.paper_id}</SheetDescription></SheetHeader>{candidate ? <div className="grid gap-4 overflow-y-auto px-4 pb-5"><div className="grid grid-cols-2 gap-3 rounded-lg border p-4"><Detail label={mode === "random" ? "Sampling basis" : "Evidence tier"} value={mode === "random" ? "Random" : candidate.evidence_tier} /><Detail label="Candidate strength" value={mode === "random" ? "Not scored" : `${Math.round(candidate.candidate_strength)}/100`} /><Detail label="Discovery readiness" value={candidate.pipeline_ready ? "PDF URL found; not yet validated" : "No-PDF-URL watchlist"} /><Detail label="Citations" value={candidate.cited_by_count ?? "—"} /></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">{mode === "random" ? "Selection reason" : "Discovery evidence"}</p><div className="mt-2 flex flex-wrap gap-2">{candidate.evidence_reasons.map((reason) => <Badge key={reason} variant="outline">{formatText(reason)}</Badge>)}</div></div><div className="rounded-lg border p-4"><p className="text-xs font-medium uppercase text-muted-foreground">UM dataset IDs found in the publication metadata</p><p className="mt-2 break-words font-mono text-sm">{candidate.matched_um_dataset_ids.join(", ") || "No dataset ID can be safely attributed from the OpenAlex response."}</p></div>{candidate.source_url ? <Button asChild variant="outline"><a href={candidate.source_url} target="_blank" rel="noreferrer"><RiExternalLinkLine data-icon="inline-start" />Open in OpenAlex</a></Button> : null}</div> : null}</SheetContent></Sheet>;
 }
 
-function AdvancedSettings({ highThroughput, maxCost, outputPath, overwrite, umDatasetsPath, onHighThroughput, onMaxCost, onOutputPath, onOverwrite, onUmDatasetsPath }: { highThroughput: boolean; maxCost: number; outputPath: string; overwrite: boolean; umDatasetsPath: string; onHighThroughput: (value: boolean) => void; onMaxCost: (value: number) => void; onOutputPath: (value: string) => void; onOverwrite: (value: boolean) => void; onUmDatasetsPath: (value: string) => void }) {
+function AdvancedSettings({ highThroughput, maxCost, overwrite, onHighThroughput, onMaxCost, onOverwrite }: {
+  highThroughput: boolean;
+  maxCost: number;
+  overwrite: boolean;
+  onHighThroughput: (value: boolean) => void;
+  onMaxCost: (value: number) => void;
+  onOverwrite: (value: boolean) => void;
+}) {
   return (
     <SettingsDisclosure label="Advanced settings">
       <div className="grid gap-x-4 gap-y-3 @sm:grid-cols-2">
-        <LabeledInput label="UM dataset metadata" hint="Catalog source used during pipeline processing." value={umDatasetsPath} onChange={(event) => onUmDatasetsPath(event.target.value)} />
-        <LabeledInput label="Output CSV" value={outputPath} onChange={(event) => onOutputPath(event.target.value)} />
         <LabeledInput label="Maximum OpenAlex cost" hint="Spending limit in US dollars." type="number" min={0.01} max={5} step={0.01} value={maxCost} onChange={(event) => onMaxCost(Number(event.target.value))} />
         <div className="grid gap-3 @sm:col-span-2">
           <ToggleRow label="High-throughput mode" description="Process selected papers through run-scoped queues." checked={highThroughput} onCheckedChange={onHighThroughput} />

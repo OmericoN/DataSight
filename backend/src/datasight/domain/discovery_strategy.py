@@ -437,7 +437,8 @@ def structured_direct_dataset_ids(work: Mapping[str, Any], query: StrategyQuery)
 
 
 def eligible_discovery_work(work: Mapping[str, Any], paper_id: str, known_ids: set[str]) -> bool:
-    raw = work.get("raw") if isinstance(work.get("raw"), Mapping) else work
+    payload = work.get("raw")
+    raw = payload if isinstance(payload, Mapping) else work
     publication_type = str(work.get("publication_type") or raw.get("type") or "")
     return bool(
         paper_id and paper_id not in known_ids

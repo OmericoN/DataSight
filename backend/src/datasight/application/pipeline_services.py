@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -42,11 +41,6 @@ from datasight.domain.candidate_detection import DETECTOR_VERSION, SCREENING_VER
 from datasight.infrastructure.llm.client import GatewayClient
 from datasight.domain.schemas import (
     DatasetMention,
-    DatasetMetadata,
-    DatasetRole,
-    ExtractionProvenance,
-    MentionEvidence,
-    ReferenceDirectness,
     StageResult,
     UMDatasetRecord,
     UMMatchDecision,
@@ -613,37 +607,6 @@ def extract_features_pipeline_item(
     return {**result, "item_id": item_id}
 
 
-def match_um_dataset_pipeline_item(
-    item_id: int,
-    task_id: str | None = None,
-    claimed: bool = False,
-) -> dict[str, Any]:
-    with PipelineRepository() as repo:
-        if not claimed and not repo.start_item_stage(item_id, PipelineStage.MATCH_UM_DATASET, task_id):
-            return _item_result(PipelineStage.MATCH_UM_DATASET, "skipped", item_id, "Item stage was already terminal.")
-        context = repo.get_pipeline_item_context(item_id)
-        if not context:
-            return _missing_item_result(repo, item_id, PipelineStage.MATCH_UM_DATASET)
-        records = repo.list_um_dataset_records(for_matching=True)
-        if not records:
-            message = "No UM datasets are imported. Run import-um-datasets first."
-            repo.finish_item_stage(item_id, PipelineStage.MATCH_UM_DATASET, "failed", {"message": message}, message)
-            return _item_result(PipelineStage.MATCH_UM_DATASET, "failed", item_id, message)
-
-        mention_rows = repo.get_unmatched_mentions_for_publication(context["publication_row_id"])
-        decisions = _match_mentions(records, mention_rows)
-        inserted = repo.persist_match_decisions(decisions)
-        metrics = {"decisions": inserted, "paper_id": context["paper_id"]}
-        repo.finish_item_stage(item_id, PipelineStage.MATCH_UM_DATASET, "successful", metrics)
-        return _item_result(
-            PipelineStage.MATCH_UM_DATASET,
-            "successful",
-            item_id,
-            f"Matched {inserted} mentions against UM metadata candidates.",
-            metrics,
-        )
-
-
 def export_insights_csv(
     output_path: str,
     rows: list[dict[str, Any]] | None = None,
@@ -840,58 +803,6 @@ def _coerce_csv_record(row: dict[str, str]) -> dict[str, Any]:
         coerced["year"] = int(coerced["year"])
     coerced["raw"] = dict(row)
     return coerced
-
-
-DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.I)
-URL_RE = re.compile(r"https?://[^\s<>{}\[\]]+", re.I)
-YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
-
-
-def _mention_from_candidate(candidate: dict[str, Any]) -> DatasetMention:
-    text = str(candidate["evidence_text"])
-    doi_match = DOI_RE.search(text)
-    url_match = URL_RE.search(text)
-    years = {int(value) for value in YEAR_RE.findall(text)}
-    lowered = text.casefold()
-
-    if any(
-        phrase in lowered
-        for phrase in ("we collected", "we gathered", "data were collected", "data was collected")
-    ):
-        role = DatasetRole.CREATED
-    elif re.search(r"\b(used|using|analysed|analyzed)\b", lowered):
-        role = DatasetRole.USED
-    else:
-        role = DatasetRole.UNCLEAR
-
-    dataset_name = str(candidate["dataset_name"])
-    directness = (
-        ReferenceDirectness.DIRECT
-        if doi_match or url_match or dataset_name != "Author-described dataset"
-        else ReferenceDirectness.INFORMAL
-    )
-    return DatasetMention(
-        publication_id=str(candidate["publication_id"]),
-        dataset_name=dataset_name,
-        dataset_role=role,
-        reference_directness=directness,
-        evidence=MentionEvidence(
-            body_quote=text,
-            section_heading=candidate.get("section_heading"),
-            standardized_section=candidate.get("standardized_section"),
-        ),
-        metadata=DatasetMetadata(
-            persistent_identifier=doi_match.group(0).rstrip(".,;:") if doi_match else None,
-            dataset_url=url_match.group(0).rstrip(".,;:)") if url_match else None,
-            dataset_year=next(iter(years)) if len(years) == 1 else None,
-        ),
-        provenance=ExtractionProvenance(
-            char_start=candidate.get("char_start"),
-            char_end=candidate.get("char_end"),
-            confidence=candidate.get("score", 0.0),
-            prompt_version=DETECTOR_VERSION,
-        ),
-    )
 
 
 def _project_path(path: str | Path) -> Path:

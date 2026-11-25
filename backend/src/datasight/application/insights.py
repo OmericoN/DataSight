@@ -43,12 +43,6 @@ RUN_RESULT_STAGE_COLUMNS: tuple[str, ...] = (
     "document_rendered",
 )
 
-RUN_RESULT_COLUMNS: tuple[str, ...] = (
-    *INSIGHT_COLUMNS[:5],
-    *RUN_RESULT_STAGE_COLUMNS,
-    *INSIGHT_COLUMNS[5:],
-)
-
 RUN_CANDIDATE_RESULT_COLUMNS: tuple[str, ...] = (
     "paper_id",
     "publication_title",
@@ -113,11 +107,6 @@ def validate_discovery_candidate_columns(columns: Sequence[str] | None) -> list[
     return _validate_columns(columns, DISCOVERY_CANDIDATE_COLUMNS, "discovery candidate")
 
 
-def validate_run_result_columns(columns: Sequence[str] | None) -> list[str]:
-    """Return selected unified run-result columns in canonical order."""
-    return _validate_columns(columns, RUN_RESULT_COLUMNS, "run result")
-
-
 def validate_run_candidate_result_columns(columns: Sequence[str] | None) -> list[str]:
     """Return selected one-row-per-paper candidate columns in canonical order."""
     return _validate_columns(columns, RUN_CANDIDATE_RESULT_COLUMNS, "run candidate")
@@ -133,13 +122,7 @@ def serialize_insights_csv(
     columns: Sequence[str] | None = None,
 ) -> str:
     """Serialize insight rows as UTF-8 compatible CSV with JSON structured cells."""
-    selected_columns = validate_insight_columns(columns)
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=selected_columns, extrasaction="ignore")
-    writer.writeheader()
-    for row in rows:
-        writer.writerow({column: _csv_cell(row.get(column)) for column in selected_columns})
-    return output.getvalue()
+    return _serialize_rows_csv(rows, validate_insight_columns(columns))
 
 
 def serialize_discovery_candidates_csv(
@@ -148,15 +131,6 @@ def serialize_discovery_candidates_csv(
 ) -> str:
     """Serialize selected run discovery candidates as CSV."""
     selected_columns = validate_discovery_candidate_columns(columns)
-    return _serialize_rows_csv(rows, selected_columns)
-
-
-def serialize_run_results_csv(
-    rows: Iterable[dict[str, Any]],
-    columns: Sequence[str] | None = None,
-) -> str:
-    """Serialize selected candidates and any joined insight rows as one CSV."""
-    selected_columns = validate_run_result_columns(columns)
     return _serialize_rows_csv(rows, selected_columns)
 
 

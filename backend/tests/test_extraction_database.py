@@ -167,13 +167,16 @@ def test_pdf_pool_replaces_failed_download_and_preserves_lineage_across_connecti
     repo.finish_pipeline_run(old_run, "completed_with_errors")
     repo.persist_discovery_candidates(run, candidates)
 
-    assert repo.next_pool_download(run, 1)["paperId"] == "W1"
+    original = repo.next_pool_download(run, 1)
+    assert original is not None and original["paperId"] == "W1"
     repo.persist_download_results([DownloadResult("W1", False, "Access blocked", failure_category="access_blocked")], run)
-    assert repo.next_pool_download(run, 1)["paperId"] == "W3"
+    replacement = repo.next_pool_download(run, 1)
+    assert replacement is not None and replacement["paperId"] == "W3"
     # A restarted worker must reclaim the same uncommitted slot.
     dsn = make_url(config.POSTGRES_URI).set(drivername="postgresql").render_as_string(hide_password=False)
     with PipelineRepository(dsn) as restarted:
-        assert restarted.next_pool_download(run, 1)["paperId"] == "W3"
+        resumed = restarted.next_pool_download(run, 1)
+        assert resumed is not None and resumed["paperId"] == "W3"
         pdf = tmp_path / "W3.pdf"
         pdf.write_bytes(b"%PDF-1.7\n%%EOF\n")
         pdf_hash = sha256(pdf.read_bytes()).hexdigest()
@@ -199,6 +202,20 @@ def test_pdf_pool_replaces_failed_download_and_preserves_lineage_across_connecti
     assert not repo.get_markdown_artifacts_needing_detection(pipeline_run_id=run)
     assert repo.persist_render_results([rendered], run) == 1
     assert [row["paper_id"] for row in repo.get_markdown_artifacts_needing_detection(pipeline_run_id=run)] == ["W3"]
+
+
+def test_single_stage_run_finishes_when_its_stage_finishes(database):
+    repo = database
+    automatic = repo.create_pipeline_run("preview launch", {"preview_id": "preview"})
+    standalone = repo.create_pipeline_run("manual render", {"stage": "render_document"})
+    for run_id in (automatic, standalone):
+        repo.record_stage_start("render_document", run_id)
+        assert repo.active_run_count() == 2
+        repo.record_stage_result("render_document", "completed_with_errors", pipeline_run_id=run_id)
+    assert repo.get_pipeline_run(automatic)["status"] == "running"
+    finished = repo.get_pipeline_run(standalone)
+    assert finished["status"] == "completed_with_errors" and finished["finished_at"] is not None
+    assert repo.active_run_count() == 1
 
 
 def test_distinct_papers_share_run_lock_and_only_original_task_reclaims(database):

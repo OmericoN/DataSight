@@ -209,30 +209,6 @@ class UMDatasetRepositoryMixin:
         self.cursor.execute(query, params)
         return [dict(row) for row in self.cursor.fetchall()]
 
-    def get_unmatched_mentions_for_publication(self, publication_row_id: int) -> list[dict[str, Any]]:
-        self.cursor.execute(
-            """
-            SELECT
-                dm.id AS mention_id,
-                p.paper_id AS publication_id,
-                dm.dataset_name,
-                dm.aliases,
-                dm.dataset_role,
-                dm.reference_directness,
-                dm.evidence,
-                dm.metadata,
-                dm.provenance
-            FROM dataset_mentions dm
-            JOIN publications p ON p.id = dm.publication_id
-            LEFT JOIN um_match_decisions md ON md.dataset_mention_id = dm.id
-            WHERE md.id IS NULL
-              AND dm.publication_id = %s
-            ORDER BY dm.id
-            """,
-            (publication_row_id,),
-        )
-        return [dict(row) for row in self.cursor.fetchall()]
-
     def persist_match_decisions(self, decisions: Iterable[UMMatchDecision]) -> int:
         count = 0
         for decision in decisions:

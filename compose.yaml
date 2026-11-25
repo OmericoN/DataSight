@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: datasight_pipeline
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - datasight_pgvector_data:/var/lib/postgresql
     healthcheck:
@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -30,7 +30,7 @@ services:
   grobid:
     image: lfoppiano/grobid:0.8.0
     ports:
-      - "8070:8070"
+      - "127.0.0.1:8070:8070"
     healthcheck:
       test:
         - CMD
@@ -60,6 +60,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       GROBID_BASE_URL: http://grobid:8070
+      OPENALEX_API_KEY: ${OPENALEX_API_KEY:-}
       OPENALEX_MAILTO: ${OPENALEX_MAILTO:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -104,7 +105,7 @@ services:
     command: ["uv", "run", "uvicorn", "datasight.interfaces.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: *app_env
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
       - datasight_uv_cache:/root/.cache/uv

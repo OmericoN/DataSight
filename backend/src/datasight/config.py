@@ -15,7 +15,7 @@ load_dotenv(dotenv_path=env_path)
 load_dotenv()
 
 try:
-    APP_VERSION = version("datasight")
+    APP_VERSION = version("datasight-pipeline")
 except PackageNotFoundError:
     APP_VERSION = "0.1.0"
 

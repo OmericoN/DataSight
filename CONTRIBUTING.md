@@ -4,28 +4,23 @@ DataSight is a small layered system: a Python backend, a Vite React frontend, an
 
 ## Local Setup
 
-Backend:
+Follow the [quick start](README.md#quick-start) for the full stack. The root `.env` template lets the host CLI reach the Compose PostgreSQL service on port 5433.
 
-```powershell
-cd backend
-uv sync
-uv run alembic upgrade head
-uv run datasight doctor
-```
-
-Full local stack:
+For local Python development, start the infrastructure from the repository root and run the backend commands from `backend/`:
 
 ```powershell
 docker compose up -d postgres redis grobid
-docker compose run --rm migrate
-docker compose up api worker
+cd backend
+uv sync --locked
+uv run alembic upgrade head
+uv run datasight doctor
 ```
 
 Frontend:
 
 ```powershell
 cd frontend
-bun install
+bun install --frozen-lockfile
 bun run dev
 ```
 
@@ -45,6 +40,9 @@ workflow manually from the repository's Actions tab. Dependencies are installed
 from the committed lockfiles; no repository secrets or running services are needed.
 The supplied-catalog shape test runs only when the ignored `data/um_dataset`
 directory is present. Importer tests using generated fixtures run in every checkout.
+PostgreSQL integration tests also run when `DATASIGHT_TEST_POSTGRES_URI` points to
+an isolated database with `test` in its name. The tests manage temporary schemas
+and exercise the migrations. Use a database created for testing.
 
 Run backend checks before opening a change:
 
@@ -65,7 +63,7 @@ bun run build
 Run Compose validation when changing services, commands, or environment:
 
 ```powershell
-docker compose config
+docker compose config --quiet
 ```
 
 ## Boundaries
@@ -87,7 +85,6 @@ Prefer importing through the active `datasight` package. Do not add compatibilit
 ```text
 backend/    FastAPI, Celery, Alembic, pipeline services, and tests
 frontend/   Vite React dashboard for running and monitoring the pipeline
-docs/       Focused guides for API use, project rationale, and architecture
 data/       Curated source and reference inputs
 storage/    Generated runtime artifacts, ignored by git
 ```

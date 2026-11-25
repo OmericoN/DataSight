@@ -2,38 +2,35 @@
 
 FastAPI, Celery, Alembic, and pipeline services for the DataSight monorepo.
 
-Run local backend commands from this directory:
+Follow the [repository quick start](../README.md#quick-start) for infrastructure
+and credentials. Run backend development checks from this directory:
 
 ```powershell
-uv sync
-uv run alembic upgrade head
-uv run datasight doctor
+uv sync --locked
 uv run pytest -q
 uv run basedpyright
 ```
 
-## LLM extraction
+## Developer map
 
-The `extract_features` stage now uses the authenticated DSRI gateway to process
-whole publications. Apply the latest migration and configure the backend before
-running it. See [LLM_EXTRACTION.md](LLM_EXTRACTION.md) for the schema, setup,
-manual resume, API, exports, FAIR interpretation and evaluation gate.
-
-### Developer map
-
-The flow is: selected publication → full-body source snapshot → locate evidence →
-extract typed facts → validate citations and source offsets → publish one complete
-result. Interrupted requests retain checkpoints for an explicit resume.
-
-- `application/llm_extraction.py` owns the run and publication boundaries.
-- `application/extraction_engine.py` implements the original LLM strategy;
-  `application/bounded_extraction.py` implements the opt-in, budgeted strategy.
+- `interfaces/api/main.py` serves the API under `/api/v1`. The running service
+  lists request and response schemas at [`/docs`](http://localhost:8000/docs).
+  Create a preview with `POST /discovery/preview`, review it, and launch it with
+  `POST /runs`. Read progress at `GET /runs/{run_id}` and events at
+  `GET /runs/{run_id}/events`.
+- `application/discovery_preview.py`, `orchestrator.py`, and `pipeline_services.py`
+  build and materialize the pool and coordinate each stage.
+- `infrastructure/worker/tasks.py` connects Celery to the stage services. Standard
+  runs execute one batch per stage. High-throughput runs validate the PDF target
+  first, then advance each paper through conversion, rendering, and inference.
+- `application/llm_extraction.py` owns run and publication boundaries.
+  `application/catalog_extraction.py` implements the default extractor.
 - `domain/extraction.py` defines the evidence contract and its validation.
 - `infrastructure/llm/client.py` calls the authenticated CPU gateway; the gateway
   forwards to the separate GPU service.
-- `infrastructure/persistence/extractions.py` stores checkpoints and publishes
-  validated results atomically.
+- `infrastructure/persistence/` stores run state in PostgreSQL, checkpoints
+  inference, and publishes complete extraction results atomically.
 - `interfaces/api/routes/extractions.py` exposes status, results, and resume.
 
-`legacy` names the original **LLM** strategy, not the former rules extractor.
-See the operational guide above before changing a prompt, schema, or fingerprint.
+See [the extraction guide](LLM_EXTRACTION.md) for setup, the evidence contract,
+model versioning, manual resume, evaluation exports, and the GPU evaluation gate.

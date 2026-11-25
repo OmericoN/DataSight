@@ -112,6 +112,15 @@ class RunRepositoryMixin:
                     psycopg2.extras.Json(metrics or {}),
                 ),
             )
+        if status != "running":
+            self.cursor.execute(
+                """
+                UPDATE pipeline_runs
+                SET status = %s, finished_at = statement_timestamp(), updated_at = now()
+                WHERE id = %s AND config->>'stage' = %s AND status = 'running'
+                """,
+                (status, pipeline_run_id, str(stage)),
+            )
         self._insert_pipeline_run_event(
             pipeline_run_id=pipeline_run_id,
             stage=str(stage),

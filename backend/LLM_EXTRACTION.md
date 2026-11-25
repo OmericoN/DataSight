@@ -11,6 +11,10 @@ receives `no_use`. Likely use, ambiguous evidence, incomplete source text, and
 inference failures keep a publication eligible for `extract_features`.
 
 The screening decision is saved with the render hash and detector version.
+`New` counts decisions computed in the current screening pass. `Reused` counts
+saved decisions for the same render and detector version. Discovery skips
+publications with a successful extraction or a terminal negative screening
+decision. A paper that failed downstream can still be eligible on a later run.
 `papers.csv` includes the decision and the reason in `detection_metrics`.
 `rules-v3` and its candidate records remain available for historical runs.
 

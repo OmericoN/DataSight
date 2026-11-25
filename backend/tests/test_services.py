@@ -8,13 +8,35 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from datasight.application.pipeline_services import (
-    _mention_from_candidate,
     _result_from_operation,
     export_insights_csv,
     load_um_dataset_records,
 )
-from datasight.domain.schemas import DatasetRole, ReferenceDirectness
 from datasight.domain.stages import PipelineStage
+from datasight.infrastructure.worker import tasks
+
+
+def test_worker_failure_only_marks_the_run_named_by_the_task(monkeypatch):
+    failed = []
+
+    class Repo:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def fail_pipeline_run(self, run_id, message):
+            failed.append((run_id, message))
+
+    monkeypatch.setattr(tasks, "PipelineRepository", Repo)
+    error = RuntimeError("conversion failed")
+    tasks.mark_pipeline_run_failed(sender=tasks.grobid_convert, args=(50, True, False), exception=error)
+    tasks.mark_pipeline_run_failed(sender=tasks.grobid_convert, kwargs={"pipeline_run_id": True}, exception=error)
+    assert failed == []
+    tasks.mark_pipeline_run_failed(sender=tasks.grobid_convert, args=(50, True, False, 9), exception=error)
+    tasks.mark_pipeline_run_failed(sender=tasks.grobid_convert, kwargs={"limit": 50, "pipeline_run_id": 10}, exception=error)
+    assert failed == [(9, "conversion failed"), (10, "conversion failed")]
 
 
 def test_export_insights_csv_includes_discovery_provenance_and_json_cells(tmp_path, monkeypatch):
@@ -84,29 +106,6 @@ def test_batch_result_reports_partial_failures():
     assert result["status"] == "completed_with_errors"
     assert result["payload"]["successful"] == 1
     assert result["payload"]["failed"] == 1
-
-
-def test_rule_feature_extraction_populates_matchable_metadata():
-    mention = _mention_from_candidate(
-        {
-            "publication_id": "p1",
-            "dataset_name": "Maastricht Health Survey",
-            "evidence_text": (
-                "We used the Maastricht Health Survey dataset (2024), "
-                "available at https://doi.org/10.1234/example."
-            ),
-            "char_start": 10,
-            "char_end": 120,
-            "score": 0.8,
-        }
-    )
-
-    assert mention.metadata.persistent_identifier == "10.1234/example"
-    assert str(mention.metadata.dataset_url) == "https://doi.org/10.1234/example"
-    assert mention.metadata.dataset_year == 2024
-    assert mention.dataset_role == DatasetRole.USED
-    assert mention.reference_directness == ReferenceDirectness.DIRECT
-    assert mention.provenance.prompt_version == "rules-v3"
 
 
 def test_evaluation_bundle_preserves_extraction_outcomes_and_source_evidence(tmp_path, monkeypatch):
